@@ -1,3 +1,9 @@
 [submodule "vendor/ArTICL"]
 	path = vendor/ArTICL
 	url = git@github.com:KermMartian/ArTICL.git
+[submodule "vendor/n-link"]
+	path = vendor/n-link
+	url = https://github.com/lights0123/n-link
+[submodule "vendor/libnspire-rs"]
+	path = vendor/libnspire-rs
+	url = git@github.com:lights0123/libnspire-rs.git
