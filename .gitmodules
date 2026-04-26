@@ -1,0 +1,3 @@
+[submodule "vendor/ArTICL"]
+	path = vendor/ArTICL
+	url = git@github.com:KermMartian/ArTICL.git
