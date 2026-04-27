@@ -13,3 +13,6 @@
 [submodule "vendor/tilibs"]
 	path = vendor/tilibs
 	url = git@github.com:debrouxl/tilibs.git
+[submodule "vendor/pico-sdk"]
+	path = vendor/pico-sdk
+	url = git@github.com:raspberrypi/pico-sdk.git

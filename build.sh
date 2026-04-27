@@ -1,41 +1,43 @@
 #!/usr/bin/env bash
-# Incremental build for the Pico firmware.
-# Wipe build/ manually for a true clean rebuild; ccache survives that.
-#
 # Usage:
-#   ./build.sh           configure (if needed) and build
-#   ./build.sh --flash   build, then flash via picotool (Pico must be in BOOTSEL)
-
+#   ./build.sh             Build every registered Pico app.
+#   ./build.sh <app>       Build only <app> (must be add_pico_app'd in CMakeLists.txt).
+#   ./build.sh -l          List registered apps.
+#   ./build.sh -c          Wipe the build directory and exit.
+#   ./build.sh -h          Show this help.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC="$ROOT/firmware/c"
-BUILD="$ROOT/build"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+src_dir="$repo_root/firmware/c"
+build_dir="$src_dir/build"
+cmakelists="$src_dir/CMakeLists.txt"
 
-FLASH=0
-for arg in "$@"; do
-    case "$arg" in
-        --flash) FLASH=1 ;;
-        *) echo "unknown arg: $arg" >&2; exit 2 ;;
-    esac
-done
+list_apps() {
+    grep -oP '(?<=add_pico_app\()[^)]+' "$cmakelists"
+}
 
-if ! command -v ccache >/dev/null; then
-    echo "ccache not found on PATH" >&2
+usage() { sed -n '2,7p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    -l|--list) list_apps; exit 0 ;;
+    -c|--clean) rm -rf "$build_dir"; echo "Removed $build_dir"; exit 0 ;;
+esac
+
+target="${1:-}"
+if [[ -n "$target" ]] && ! list_apps | grep -qx "$target"; then
+    echo "error: '$target' is not registered in $cmakelists" >&2
+    echo "registered apps:" >&2
+    list_apps | sed 's/^/  /' >&2
     exit 1
 fi
 
-if [ ! -f "$BUILD/build.ninja" ] && [ ! -f "$BUILD/Makefile" ]; then
-    cmake -S "$SRC" -B "$BUILD" -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+if [[ ! -f "$build_dir/CMakeCache.txt" ]]; then
+    cmake -S "$src_dir" -B "$build_dir"
 fi
 
-cmake --build "$BUILD"
-
-ln -sf "$BUILD/compile_commands.json" "$ROOT/compile_commands.json"
-
-if [ "$FLASH" = "1" ]; then
-    picotool load -x "$BUILD/bringup.uf2"
+if [[ -n "$target" ]]; then
+    cmake --build "$build_dir" --target "$target" -j
+else
+    cmake --build "$build_dir" -j
 fi

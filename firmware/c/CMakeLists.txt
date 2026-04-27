@@ -6,12 +6,16 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(PICO_BOARD pico_w CACHE STRING "Board type")
 
-if(DEFINED ENV{PICO_SDK_PATH})
+get_filename_component(_repo_root ${CMAKE_CURRENT_LIST_DIR}/../.. ABSOLUTE)
+if(EXISTS ${_repo_root}/vendor/pico-sdk/pico_sdk_init.cmake)
+    set(PICO_SDK_PATH ${_repo_root}/vendor/pico-sdk)
+elseif(DEFINED ENV{PICO_SDK_PATH})
     set(PICO_SDK_PATH $ENV{PICO_SDK_PATH})
 elseif(EXISTS /usr/share/pico-sdk/pico_sdk_init.cmake)
     set(PICO_SDK_PATH /usr/share/pico-sdk)
 else()
-    message(FATAL_ERROR "Set PICO_SDK_PATH or install the pico-sdk package")
+    message(FATAL_ERROR
+        "pico-sdk not found. Run: git submodule update --init --recursive vendor/pico-sdk")
 endif()
 
 include(${PICO_SDK_PATH}/pico_sdk_init.cmake)

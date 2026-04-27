@@ -1,9 +1,0 @@
-CompileFlags:
-  CompilationDatabase: firmware/c/build
-  # Strip GCC-only flags that clang would warn about.
-  Remove:
-    - -mcpu=*
-    - -mthumb
-    - -mfloat-abi=*
-    - -mfpu=*
-    - -fno-reorder-blocks-and-partition

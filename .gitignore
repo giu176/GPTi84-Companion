@@ -16,3 +16,20 @@ compile_commands.json
 *.elf
 *.bin
 *.map
+
+# CMake / Pico SDK in-tree build artifacts (in case someone runs cmake
+# from a source dir instead of an out-of-tree build/ directory).
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeUserPresets.json
+Makefile
+cpm-package-lock.cmake
+pico_flash_region.ld
+generated/
+
+# Build outputs at the repo root only — keep vendored firmware blobs
+# under firmware/<board>/ tracked.
+/*.uf2
+/*.hex
+/*.dis
