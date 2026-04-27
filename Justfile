@@ -20,9 +20,7 @@ tilem_binary := tilem_build / "gui/tilem2"
 headless_binary := decoder_build / "tilem_headless"
 mk_hello_binary := decoder_build / "mk_hello_8xp"
 hello_8xp := decoder_src / "programs/HELLO.8Xp"
-loopback_8xp := decoder_src / "programs/LOOPBACK.8Xp"
 loopback_binary := decoder_build / "link_loopback"
-mk_loopback_binary := decoder_build / "mk_link_loopback_8xp"
 
 # List available recipes.
 default:
@@ -212,19 +210,19 @@ emu-headless *args: emu-build
     fi
     exec "{{headless_binary}}" "{{emu_rom}}" "$prog" "{{emu_state}}"
 
-# Build and run the simulated link-port loopback test.
-# Boots an emulated 84+ running LOOPBACK.8Xp (Send/Get pair), reads the
-# bytes on the "fake Pico" side, echoes them back, then dumps the LCD.
+# Build and run the silent-mode DBUS roundtrip test.
+# Cold-boots an emulated 84+, silent-sends L1 = {65, 66, 67}, silent-
+# requests it back, decodes the BCD floats, verifies the bytes match.
+# No TI-BASIC program: this exercises the protocol the Pico bridge
+# will speak in production.
 emu-link-loopback: emu-build
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ ! -f "{{decoder_build}}/CMakeCache.txt" ]]; then
         cmake -S "{{decoder_src}}" -B "{{decoder_build}}"
     fi
-    cmake --build "{{decoder_build}}" --target link_loopback mk_link_loopback_8xp -j
-    mkdir -p "$(dirname "{{loopback_8xp}}")"
-    "{{mk_loopback_binary}}" "{{loopback_8xp}}"
-    exec "{{loopback_binary}}" "{{emu_rom}}" "{{loopback_8xp}}" "{{emu_state}}"
+    cmake --build "{{decoder_build}}" --target link_loopback -j
+    exec "{{loopback_binary}}" "{{emu_rom}}" "{{emu_state}}"
 
 # Format all C/C++ sources outside vendor/ and build/.
 fmt:

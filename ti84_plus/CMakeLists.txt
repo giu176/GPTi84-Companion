@@ -36,11 +36,6 @@ target_include_directories(mk_hello_8xp PRIVATE ${TILIBS_INCLUDE_DIRS})
 target_compile_options(mk_hello_8xp PRIVATE ${TILIBS_CFLAGS_OTHER})
 target_link_libraries(mk_hello_8xp PRIVATE ${TILIBS_LIBRARIES})
 
-add_executable(mk_link_loopback_8xp headless/mk_link_loopback_8xp.c)
-target_include_directories(mk_link_loopback_8xp PRIVATE ${TILIBS_INCLUDE_DIRS})
-target_compile_options(mk_link_loopback_8xp PRIVATE ${TILIBS_CFLAGS_OTHER})
-target_link_libraries(mk_link_loopback_8xp PRIVATE ${TILIBS_LIBRARIES})
-
 add_executable(tilem_headless headless/headless.c headless/tilem_embed.c)
 target_include_directories(tilem_headless PRIVATE
     ${TILIBS_INCLUDE_DIRS}
