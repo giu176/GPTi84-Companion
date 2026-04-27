@@ -310,41 +310,32 @@ static int walk_records(const uint8_t *payload, size_t len, struct walk_stats *s
 
 /* ---- Page extraction ---- */
 
-struct page_buf {
-    uint8_t *data;        /* MAX_PAGES * PAGE_SIZE, prefilled with 0xFF */
-    uint8_t  touched[MAX_PAGES];
-};
-
 static int store_page_byte(uint16_t page, uint16_t off, const uint8_t *data, uint8_t len, void *user) {
-    struct page_buf *pb = user;
+    uint8_t *buf = user;
     /* walk_records already validated page < MAX_PAGES and off+len <= PAGE_SIZE. */
-    memcpy(pb->data + (size_t)page * PAGE_SIZE + off, data, len);
-    pb->touched[page] = 1;
+    memcpy(buf + (size_t)page * PAGE_SIZE + off, data, len);
     return 0;
 }
 
-/* Writes one file per touched page into out_dir, named "page_XX.bin". */
-static int write_pages(const struct page_buf *pb, const char *out_dir) {
-    char path[1024];
+/* Writes touched pages concatenated in ascending page-index order to out_path.
+ * Untouched pages are skipped, so file size = pages_touched * PAGE_SIZE.
+ * Offsets within the file are *not* flash offsets — gaps are squeezed out. */
+static int write_os_image(const uint8_t *buf, const struct walk_stats *st, const char *out_path) {
+    FILE *out = fopen(out_path, "wb");
+    if (!out) {
+        perror(out_path);
+        return -1;
+    }
     for (unsigned p = 0; p < MAX_PAGES; p++) {
-        if (!pb->touched[p]) continue;
-        int n = snprintf(path, sizeof(path), "%s/page_%02X.bin", out_dir, p);
-        if (n < 0 || (size_t)n >= sizeof(path)) {
-            fprintf(stderr, "output path too long for page 0x%02X\n", p);
-            return -1;
-        }
-        FILE *out = fopen(path, "wb");
-        if (!out) {
-            perror(path);
-            return -1;
-        }
-        size_t wrote = fwrite(pb->data + (size_t)p * PAGE_SIZE, 1, PAGE_SIZE, out);
-        fclose(out);
+        if (!st->page_touched[p]) continue;
+        size_t wrote = fwrite(buf + (size_t)p * PAGE_SIZE, 1, PAGE_SIZE, out);
         if (wrote != PAGE_SIZE) {
-            fprintf(stderr, "%s: short write\n", path);
+            fprintf(stderr, "%s: short write on page 0x%02X\n", out_path, p);
+            fclose(out);
             return -1;
         }
     }
+    fclose(out);
     return 0;
 }
 
@@ -401,11 +392,11 @@ static int slurp_payload(const char *path, const struct tifl_header *h,
 
 int main(int argc, char **argv) {
     if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
-        fprintf(stderr, "usage: %s [path.8Xu] [out_dir]\n", argv[0]);
+        fprintf(stderr, "usage: %s [path.8Xu] [out.bin]\n", argv[0]);
         return 0;
     }
     const char *path = argc > 1 ? argv[1] : "ti84_plus/ti84_plus_255/TI84Plus_OS255.8Xu";
-    const char *out_dir = argc > 2 ? argv[2] : NULL;
+    const char *out_path = argc > 2 ? argv[2] : NULL;
 
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -441,25 +432,25 @@ int main(int argc, char **argv) {
     printf("payload: %zu bytes\n", payload_len);
 
     struct walk_stats st;
-    struct page_buf pb = { 0 };
+    uint8_t *flash = NULL;
     int wrc;
 
-    if (out_dir) {
-        pb.data = malloc((size_t)MAX_PAGES * PAGE_SIZE);
-        if (!pb.data) {
+    if (out_path) {
+        flash = malloc((size_t)MAX_PAGES * PAGE_SIZE);
+        if (!flash) {
             fprintf(stderr, "out of memory (%u bytes)\n", MAX_PAGES * PAGE_SIZE);
             free(payload);
             return 1;
         }
-        memset(pb.data, 0xFF, (size_t)MAX_PAGES * PAGE_SIZE);
-        wrc = walk_records(payload, payload_len, &st, store_page_byte, &pb);
+        memset(flash, 0xFF, (size_t)MAX_PAGES * PAGE_SIZE);
+        wrc = walk_records(payload, payload_len, &st, store_page_byte, flash);
     } else {
         wrc = walk_records(payload, payload_len, &st, NULL, NULL);
     }
     free(payload);
 
     if (wrc != HEX_OK) {
-        free(pb.data);
+        free(flash);
         return 1;
     }
 
@@ -477,13 +468,14 @@ int main(int argc, char **argv) {
                p, st.page_min[p], st.page_max_end[p], span);
     }
 
-    if (out_dir) {
-        if (write_pages(&pb, out_dir) != 0) {
-            free(pb.data);
+    if (out_path) {
+        if (write_os_image(flash, &st, out_path) != 0) {
+            free(flash);
             return 1;
         }
-        printf("\nwrote %u page file(s) to %s/\n", st.pages_touched, out_dir);
+        printf("\nwrote %u pages (%u bytes) to %s\n",
+               st.pages_touched, st.pages_touched * PAGE_SIZE, out_path);
     }
-    free(pb.data);
+    free(flash);
     return 0;
 }

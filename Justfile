@@ -44,7 +44,9 @@ build-clean:
     rm -rf "{{firmware_build}}"
     @echo "Removed {{firmware_build}}"
 
-# Build (if needed) and run the host-side .8Xu decoder. Extra args forwarded to the binary.
+# Build (if needed) and run the host-side .8Xu decoder.
+# Args: [input.8Xu] [output.bin]. With 0 args, uses the bundled OS 2.55 input
+# and skips writing. With 1 arg, writes <input_basename>.bin into the build dir.
 decode *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -53,11 +55,11 @@ decode *args:
     fi
     cmake --build "{{decoder_build}}" --target decoder -j
     args=({{args}})
-    if [[ ${#args[@]} -gt 0 ]]; then
-        exec "{{decoder_binary}}" "${args[@]}"
-    else
-        exec "{{decoder_binary}}" "{{decoder_default_input}}"
-    fi
+    case ${#args[@]} in
+        0) exec "{{decoder_binary}}" "{{decoder_default_input}}" ;;
+        1) exec "{{decoder_binary}}" "${args[0]}" "{{decoder_build}}/$(basename "${args[0]}" .8Xu).bin" ;;
+        *) exec "{{decoder_binary}}" "${args[@]}" ;;
+    esac
 
 # Wipe the decoder build directory.
 decode-clean:
