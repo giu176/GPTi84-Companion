@@ -14,7 +14,7 @@
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
 
-#include "bringup_pio.pio.h"
+#include "bringup.pio.h"
 
 #define PIN_OUT 2
 #define PIN_IN  3

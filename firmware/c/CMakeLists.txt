@@ -23,23 +23,6 @@ pico_sdk_init()
 # CPM.cmake -- vendored, version-pinned. Set CPM_SOURCE_CACHE in the env
 # (e.g. ~/.cache/CPM) to share fetched deps across projects.
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/CPM.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/pico_app.cmake)
 
-add_executable(bringup
-    src/bringup.c
-)
-
-target_include_directories(bringup PRIVATE src)
-
-pico_generate_pio_header(bringup ${CMAKE_CURRENT_LIST_DIR}/src/bringup_pio.pio)
-
-target_link_libraries(bringup
-    pico_stdlib
-    hardware_pio
-    hardware_clocks
-    pico_cyw43_arch_none
-)
-
-pico_enable_stdio_usb(bringup 1)
-pico_enable_stdio_uart(bringup 0)
-
-pico_add_extra_outputs(bringup)
+add_pico_app(bringup)
