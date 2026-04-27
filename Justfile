@@ -134,10 +134,10 @@ emu-send *args: emu-build
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ -f "{{emu_state}}" ]]; then
-        exec "{{tilem_binary}}" -l -s "{{emu_state}}" {{args}}
+        exec "{{tilem_binary}}" -s "{{emu_state}}" {{args}}
     else
         echo "no state file at {{emu_state}} — cold-booting; quit-and-save to create one" >&2
-        exec "{{tilem_binary}}" -l -r "{{emu_rom}}" {{args}}
+        exec "{{tilem_binary}}" -r "{{emu_rom}}" {{args}}
     fi
 
 # Decode + re-encode the default OS, then send the round-tripped .8Xu to the emulator.
@@ -156,12 +156,12 @@ emu-trace *args: emu-build
     mkdir -p "$(dirname "$log")"
     echo "trace → $log (tail -f to follow)" >&2
     if [[ -f "{{emu_state}}" ]]; then
-        "{{tilem_binary}}" -l -s "{{emu_state}}" {{args}} 2>"$log"
+        "{{tilem_binary}}" -s "{{emu_state}}" {{args}} 2>"$log"
     else
         echo "no state file at {{emu_state}} — cold-booting; quit-and-save to create one" >&2
-        "{{tilem_binary}}" -l -r "{{emu_rom}}" {{args}} 2>"$log"
+        "{{tilem_binary}}" -r "{{emu_rom}}" {{args}} 2>"$log"
     fi
-    echo "trace saved ($(wc -l <"$log") lines): $log" >&2
+    echo "trace saved ($(wc <"$log") lines): $log" >&2
 
 # Collapse the latest emu-trace log into a count-prefixed unique-line summary,
 # preserving order of first occurrence so the boot/install timeline is readable.
