@@ -37,6 +37,9 @@
 #define OFF_DATA_LEN 0x4A
 #define HEADER_LEN 0x4E
 
+#define PAGE_SIZE 0x4000  /* 16 KiB flash page */
+#define MAX_PAGES 0x80    /* 84+SE has 0x40, 84+CSE up to 0x80 */
+
 struct tifl_header {
     unsigned major;
     unsigned minor;
@@ -179,16 +182,40 @@ struct walk_stats {
     uint32_t eof_records;
     uint32_t other_records;
     uint64_t data_bytes;
-    uint32_t addr_min;
-    uint32_t addr_max_end;
-    int saw_data;
+    uint8_t  page_touched[MAX_PAGES];   /* 1 if page has any data */
+    uint16_t page_min[MAX_PAGES];       /* lowest addr written, per page */
+    uint16_t page_max_end[MAX_PAGES];   /* one past highest addr written */
+    unsigned pages_touched;             /* count of distinct pages */
 };
 
-/* Walks the Intel HEX payload, verifying each record and tracking the
- * 32-bit base address set by type-04 (extended linear address) records. */
-static int walk_records(const uint8_t *payload, size_t len, struct walk_stats *st) {
+/* TI's .8Xu departs from the Intel HEX spec for type-02 records. Standard HEX
+ * uses type-02 to set a 20-bit segmented base (paragraph << 4). TI overloads
+ * the record to carry the destination *flash page number*: the two data bytes
+ * form a 16-bit page index that selects which 16 KiB page the following
+ * type-00 records belong to.
+ *
+ * Within-record addresses are Z80 *absolute* addresses, not within-page
+ * offsets. The 84+ memory map places the boot page (page 0) at 0x0000-0x3FFF
+ * and any banked page at 0x4000-0x7FFF, so the actual within-page offset is
+ * (record.addr & 0x3FFF) regardless of which page is selected. Type-04
+ * (32-bit linear extended) is not used in this format. */
+struct walker {
+    uint16_t cur_page;
+    int      have_page;
+};
+
+/* Walks the Intel HEX payload, verifying every record and tracking which
+ * flash pages are touched. `cb` is invoked once per type-00 data record with
+ * the current page, the within-page offset, the data, and `user`. cb may be
+ * NULL for a stats-only pass. */
+typedef int (*data_cb)(uint16_t page, uint16_t off, const uint8_t *data, uint8_t len, void *user);
+
+static int walk_records(const uint8_t *payload, size_t len, struct walk_stats *st,
+                        data_cb cb, void *user) {
     memset(st, 0, sizeof(*st));
-    uint32_t base = 0;
+    /* TI's streams begin with data for page 0 (the boot page) before the
+     * first type-02 selector appears. Seed the walker accordingly. */
+    struct walker w = { .cur_page = 0, .have_page = 1 };
     size_t pos = 0;
     size_t lineno = 0;
 
@@ -197,8 +224,8 @@ static int walk_records(const uint8_t *payload, size_t len, struct walk_stats *s
         size_t llen = scan_line(payload, len, pos, &next);
         lineno++;
 
-        /* Skip blank lines and non-record lines. The Intel HEX spec allows
-         * non-':' content (comments, EOF padding like ^Z) to be ignored. */
+        /* Skip blank lines and non-record content (the Intel HEX spec allows
+         * comments and EOF padding like ^Z; ignore them). */
         if (llen == 0 || payload[pos] != ':') {
             pos = next;
             continue;
@@ -213,44 +240,63 @@ static int walk_records(const uint8_t *payload, size_t len, struct walk_stats *s
 
         switch (r.type) {
         case 0x00: {
-            uint32_t full = base | r.addr;
-            uint32_t end = full + r.len;
-            if (!st->saw_data) {
-                st->addr_min = full;
-                st->addr_max_end = end;
-                st->saw_data = 1;
+            if (!w.have_page) {
+                fprintf(stderr, "line %zu: data record before any page selector\n", lineno);
+                return HEX_ERR_BAD_HEX;
+            }
+            if (w.cur_page >= MAX_PAGES) {
+                fprintf(stderr, "line %zu: page 0x%04X exceeds MAX_PAGES (0x%X)\n",
+                        lineno, w.cur_page, MAX_PAGES);
+                return HEX_ERR_BAD_HEX;
+            }
+            uint16_t off = r.addr & 0x3FFF;
+            uint32_t end = (uint32_t)off + r.len;
+            if (end > PAGE_SIZE) {
+                fprintf(stderr, "line %zu: record spans past page boundary "
+                                "(page 0x%02X off 0x%04X + %u)\n",
+                        lineno, w.cur_page, off, r.len);
+                return HEX_ERR_BAD_HEX;
+            }
+
+            uint16_t p = w.cur_page;
+            if (!st->page_touched[p]) {
+                st->page_touched[p] = 1;
+                st->page_min[p] = off;
+                st->page_max_end[p] = (uint16_t)end;
+                st->pages_touched++;
             } else {
-                if (full < st->addr_min) st->addr_min = full;
-                if (end > st->addr_max_end) st->addr_max_end = end;
+                if (off < st->page_min[p]) st->page_min[p] = off;
+                if ((uint16_t)end > st->page_max_end[p]) st->page_max_end[p] = (uint16_t)end;
             }
             st->data_records++;
             st->data_bytes += r.len;
+
+            if (cb) {
+                int crc = cb(p, off, r.data, r.len, user);
+                if (crc != 0) return crc;
+            }
             break;
         }
         case 0x01:
-            /* TI firmware concatenates multiple HEX streams (one per page),
-             * each with its own EOF. Reset the base and keep going. */
+            /* End of stream. TI concatenates multiple HEX streams; the next
+             * stream re-starts at page 0 unless overridden by a type-02. */
             st->eof_records++;
-            base = 0;
+            w.cur_page = 0;
+            w.have_page = 1;
             break;
         case 0x02:
-            /* Type 02: segmented extended address. base = paragraph << 4. */
             if (r.len != 2) {
                 fprintf(stderr, "line %zu: type-02 with len %u (expected 2)\n", lineno, r.len);
                 return HEX_ERR_BAD_HEX;
             }
-            base = (((uint32_t)r.data[0] << 8) | (uint32_t)r.data[1]) << 4;
+            /* Page index, big-endian. See the comment above struct walker. */
+            w.cur_page = (uint16_t)((r.data[0] << 8) | r.data[1]);
+            w.have_page = 1;
             st->ext_records++;
             break;
         case 0x04:
-            /* Type 04: linear extended address. base = upper << 16. */
-            if (r.len != 2) {
-                fprintf(stderr, "line %zu: type-04 with len %u (expected 2)\n", lineno, r.len);
-                return HEX_ERR_BAD_HEX;
-            }
-            base = ((uint32_t)r.data[0] << 24) | ((uint32_t)r.data[1] << 16);
-            st->ext_records++;
-            break;
+            fprintf(stderr, "line %zu: unexpected type-04 in TI .8Xu stream\n", lineno);
+            return HEX_ERR_BAD_HEX;
         default:
             st->other_records++;
             break;
@@ -262,83 +308,160 @@ static int walk_records(const uint8_t *payload, size_t len, struct walk_stats *s
     return HEX_OK;
 }
 
+/* ---- Page extraction ---- */
+
+struct page_buf {
+    uint8_t *data;        /* MAX_PAGES * PAGE_SIZE, prefilled with 0xFF */
+    uint8_t  touched[MAX_PAGES];
+};
+
+static int store_page_byte(uint16_t page, uint16_t off, const uint8_t *data, uint8_t len, void *user) {
+    struct page_buf *pb = user;
+    /* walk_records already validated page < MAX_PAGES and off+len <= PAGE_SIZE. */
+    memcpy(pb->data + (size_t)page * PAGE_SIZE + off, data, len);
+    pb->touched[page] = 1;
+    return 0;
+}
+
+/* Writes one file per touched page into out_dir, named "page_XX.bin". */
+static int write_pages(const struct page_buf *pb, const char *out_dir) {
+    char path[1024];
+    for (unsigned p = 0; p < MAX_PAGES; p++) {
+        if (!pb->touched[p]) continue;
+        int n = snprintf(path, sizeof(path), "%s/page_%02X.bin", out_dir, p);
+        if (n < 0 || (size_t)n >= sizeof(path)) {
+            fprintf(stderr, "output path too long for page 0x%02X\n", p);
+            return -1;
+        }
+        FILE *out = fopen(path, "wb");
+        if (!out) {
+            perror(path);
+            return -1;
+        }
+        size_t wrote = fwrite(pb->data + (size_t)p * PAGE_SIZE, 1, PAGE_SIZE, out);
+        fclose(out);
+        if (wrote != PAGE_SIZE) {
+            fprintf(stderr, "%s: short write\n", path);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int slurp_payload(const char *path, const struct tifl_header *h,
+                         uint8_t **out_buf, size_t *out_len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        perror(path);
+        return -1;
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        perror("fseek");
+        fclose(f);
+        return -1;
+    }
+    long total = ftell(f);
+    if (total < 0 || (size_t)total < HEADER_LEN) {
+        fprintf(stderr, "%s: file too short\n", path);
+        fclose(f);
+        return -1;
+    }
+    size_t tail = (size_t)total - HEADER_LEN;
+    if (tail != h->data_len) {
+        fprintf(stderr, "%s: header says %u payload bytes, file has %zu\n",
+                path, h->data_len, tail);
+        fclose(f);
+        return -1;
+    }
+
+    if (fseek(f, HEADER_LEN, SEEK_SET) != 0) {
+        perror("fseek");
+        fclose(f);
+        return -1;
+    }
+    uint8_t *buf = malloc(tail);
+    if (!buf) {
+        fprintf(stderr, "out of memory (%zu bytes)\n", tail);
+        fclose(f);
+        return -1;
+    }
+    if (fread(buf, 1, tail, f) != tail) {
+        fprintf(stderr, "%s: short read on payload\n", path);
+        free(buf);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+
+    *out_buf = buf;
+    *out_len = tail;
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
+        fprintf(stderr, "usage: %s [path.8Xu] [out_dir]\n", argv[0]);
+        return 0;
+    }
     const char *path = argc > 1 ? argv[1] : "ti84_plus/ti84_plus_255/TI84Plus_OS255.8Xu";
+    const char *out_dir = argc > 2 ? argv[2] : NULL;
 
     FILE *f = fopen(path, "rb");
     if (!f) {
         perror(path);
         return 1;
     }
-
     struct tifl_header h;
     int rc = read_tifl_header(f, &h);
+    fclose(f);
     if (rc != TIFL_OK) {
-        fclose(f);
         switch (rc) {
         case TIFL_ERR_TRUNCATED:
             fprintf(stderr, "%s: file shorter than TIFL header (%d bytes)\n", path, HEADER_LEN);
-            return 1;
+            break;
         case TIFL_ERR_BAD_MAGIC:
             fprintf(stderr, "%s: not a TIFL file (bad magic)\n", path);
-            return 1;
+            break;
         case TIFL_ERR_UNSUPPORTED_TYPE:
             fprintf(stderr, "%s: unsupported TIFL object type\n", path);
-            return 1;
+            break;
         }
         return 1;
     }
 
-    /* Cross-check the declared payload length against the file size. */
-    if (fseek(f, 0, SEEK_END) != 0) {
-        perror("fseek");
-        fclose(f);
-        return 1;
-    }
-    long total = ftell(f);
-    if (total < 0 || (size_t)total < HEADER_LEN) {
-        fprintf(stderr, "%s: file too short\n", path);
-        fclose(f);
-        return 1;
-    }
-    size_t tail = (size_t)total - HEADER_LEN;
-    if (tail != h.data_len) {
-        fprintf(stderr, "%s: header says %u payload bytes, file has %zu\n", path, h.data_len, tail);
-        fclose(f);
-        return 1;
-    }
-    size_t payload_len = h.data_len;
-
-    if (fseek(f, HEADER_LEN, SEEK_SET) != 0) {
-        perror("fseek");
-        fclose(f);
-        return 1;
-    }
-
-    uint8_t *payload = malloc(payload_len);
-    if (!payload) {
-        fprintf(stderr, "out of memory (%zu bytes)\n", payload_len);
-        fclose(f);
-        return 1;
-    }
-    if (fread(payload, 1, payload_len, f) != payload_len) {
-        fprintf(stderr, "%s: short read on payload\n", path);
-        free(payload);
-        fclose(f);
-        return 1;
-    }
-    fclose(f);
+    uint8_t *payload;
+    size_t payload_len;
+    if (slurp_payload(path, &h, &payload, &payload_len) != 0) return 1;
 
     printf("file:    %s\n", path);
     printf("version: %u.%02u\n", h.major, h.minor);
     printf("type:    0x%04X (%s)\n", h.type_magic,
            h.type_magic == TYPE_MAGIC_OS_83PLUS ? "TI-83+/84+ OS" : "unknown");
-    printf("payload: %zu bytes (header says %u)\n", payload_len, h.data_len);
+    printf("payload: %zu bytes\n", payload_len);
 
     struct walk_stats st;
-    int wrc = walk_records(payload, payload_len, &st);
+    struct page_buf pb = { 0 };
+    int wrc;
+
+    if (out_dir) {
+        pb.data = malloc((size_t)MAX_PAGES * PAGE_SIZE);
+        if (!pb.data) {
+            fprintf(stderr, "out of memory (%u bytes)\n", MAX_PAGES * PAGE_SIZE);
+            free(payload);
+            return 1;
+        }
+        memset(pb.data, 0xFF, (size_t)MAX_PAGES * PAGE_SIZE);
+        wrc = walk_records(payload, payload_len, &st, store_page_byte, &pb);
+    } else {
+        wrc = walk_records(payload, payload_len, &st, NULL, NULL);
+    }
     free(payload);
-    if (wrc != HEX_OK) return 1;
+
+    if (wrc != HEX_OK) {
+        free(pb.data);
+        return 1;
+    }
 
     printf("\nhex walk:\n");
     printf("  data records: %u (%llu bytes)\n", st.data_records,
@@ -346,9 +469,21 @@ int main(int argc, char **argv) {
     printf("  ext  records: %u\n", st.ext_records);
     printf("  eof  records: %u\n", st.eof_records);
     printf("  other:        %u\n", st.other_records);
-    if (st.saw_data) {
-        printf("  addr span:    0x%08X .. 0x%08X\n", st.addr_min, st.addr_max_end);
+    printf("  pages:        %u\n", st.pages_touched);
+    for (unsigned p = 0; p < MAX_PAGES; p++) {
+        if (!st.page_touched[p]) continue;
+        unsigned span = st.page_max_end[p] - st.page_min[p];
+        printf("    page 0x%02X: 0x%04X..0x%04X (%u bytes)\n",
+               p, st.page_min[p], st.page_max_end[p], span);
     }
 
+    if (out_dir) {
+        if (write_pages(&pb, out_dir) != 0) {
+            free(pb.data);
+            return 1;
+        }
+        printf("\nwrote %u page file(s) to %s/\n", st.pages_touched, out_dir);
+    }
+    free(pb.data);
     return 0;
 }
