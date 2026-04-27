@@ -16,3 +16,9 @@
 [submodule "vendor/pico-sdk"]
 	path = vendor/pico-sdk
 	url = git@github.com:raspberrypi/pico-sdk.git
+[submodule "vendor/wxwabbitemu"]
+	path = vendor/wxwabbitemu
+	url = git@github.com:alberthdev/wxwabbitemu.git
+[submodule "vendor/tilem"]
+	path = vendor/tilem
+	url = git@github.com:kuba160/tilem-gtk3.git
