@@ -9,15 +9,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "pico/stdlib.h"
-#include "pico/cyw43_arch.h"
-#include "hardware/pio.h"
 #include "hardware/clocks.h"
+#include "hardware/pio.h"
+#include "pico/cyw43_arch.h"
+#include "pico/stdlib.h"
 
 #include "bringup.pio.h"
 
 #define PIN_OUT 2
-#define PIN_IN  3
+#define PIN_IN 3
 
 static void fail(const char *msg) {
     printf("FAIL: %s\n", msg);
@@ -112,8 +112,7 @@ static void test_pio_shift(void) {
     int edges = 0;
     pio_sm_set_enabled(pio, sm, true);
 
-    absolute_time_t deadline = make_timeout_time_ms(
-        (1000 * 8 * N_BYTES) / BIT_HZ + 50);
+    absolute_time_t deadline = make_timeout_time_ms((1000 * 8 * N_BYTES) / BIT_HZ + 50);
     while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
         int v = gpio_get(PIN_IN);
         if (v != last) {
@@ -128,13 +127,12 @@ static void test_pio_shift(void) {
 
     if ((uint32_t)edges < EXPECTED_EDGES / 2) {
         char buf[96];
-        snprintf(buf, sizeof(buf),
-                 "PIO FIFO shift produced %d edges, expected ~%u",
-                 edges, EXPECTED_EDGES);
+        snprintf(buf, sizeof(buf), "PIO FIFO shift produced %d edges, expected ~%u", edges,
+                 EXPECTED_EDGES);
         fail(buf);
     }
-    printf("PASS: PIO shifts FIFO bytes onto pin (counted %d edges, expected ~%u).\n",
-           edges, EXPECTED_EDGES);
+    printf("PASS: PIO shifts FIFO bytes onto pin (counted %d edges, expected ~%u).\n", edges,
+           EXPECTED_EDGES);
 }
 
 // 4. WiFi radio is functional. Init CYW43, scan, deinit.
@@ -162,7 +160,8 @@ static void test_wifi_scan(void) {
     // Block until the scan finishes (or 10 s, whichever first).
     absolute_time_t deadline = make_timeout_time_ms(10000);
     while (cyw43_wifi_scan_active(&cyw43_state)) {
-        if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) break;
+        if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0)
+            break;
         sleep_ms(100);
     }
 
@@ -175,8 +174,8 @@ static void test_wifi_scan(void) {
     if (mac_zero) {
         fail("WiFi MAC reads as zero -- CYW43 driver not initialized");
     }
-    printf("PASS: WiFi radio active, MAC %02x:%02x:%02x:%02x:%02x:%02x, %d APs visible.\n",
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], aps);
+    printf("PASS: WiFi radio active, MAC %02x:%02x:%02x:%02x:%02x:%02x, %d APs visible.\n", mac[0],
+           mac[1], mac[2], mac[3], mac[4], mac[5], aps);
 }
 
 int main(void) {
