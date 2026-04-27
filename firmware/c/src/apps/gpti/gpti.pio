@@ -1,4 +1,0 @@
-; link port Pico connections:
-; tip = GPIO7
-; ring = GPIO6
-; sleeve = GND

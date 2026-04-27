@@ -10,3 +10,6 @@
 [submodule "vendor/micropython"]
 	path = vendor/micropython
 	url = git@github.com:micropython/micropython.git
+[submodule "vendor/tilibs"]
+	path = vendor/tilibs
+	url = git@github.com:debrouxl/tilibs.git
