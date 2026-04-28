@@ -1,23 +1,26 @@
-; CHAT.z80: ship Str1 to the Pico/desktop and exit. Reply lands in Str2.
+; CHAT.z80: ship Str1 (text/prompt) and Str2 (math/equation) to the
+; Pico/desktop and exit. Reply lands in Str0.
 ;
-; Architecture (post-2026-04-28 pivot to native String vars):
-;   At the home screen, user prepares input with `"text"->Str1` (or any
-;   expression -- numbers, math notation, all stored as a token stream
-;   inside the String var). User runs `Asm(prgmCHAT)`. We look up Str1
-;   in NVRAM, ship it via _SendVarCmd, and exit.
+; Architecture (Str1=text, Str2=math, Str0=reply):
+;   A TI-BASIC "deck" program owns the GUI -- it sets up Str1 and Str2,
+;   calls Asm(prgmCHAT), and reads Str0. The asm stays dumb: send Str1,
+;   send Str2, exit.
 ;
-;   The Pico relays the token stream to the desktop, which translates
-;   tokens to ASCII, processes the message, translates the reply back
-;   to tokens, and PC-master pushes it to the calc as Str2. Calc must
-;   be at the home screen for the OS's idle silent-link receive to
-;   accept it; we exit cleanly so that condition is satisfied.
+;   The Pico decodes Str1 in 'text' mode (no implicit-mult between
+;   letters: 'HELLO' stays a word) and Str2 in 'math' mode (full
+;   implicit-mult: '2X' -> '2*X'). Pico ships one combined frame to the
+;   desktop, which produces a single reply and PC-master pushes it back
+;   as Str0. Calc must be at the home screen for the OS's idle
+;   silent-link receive to accept the push; we exit cleanly so that
+;   condition is satisfied.
 ;
-;   User invokes `Str2 ENTER` at the home screen to see the reply.
+;   Either Str1 or Str2 may be missing (deck didn't populate that slot);
+;   we send whichever exists. If neither exists we exit immediately
+;   without bothering the wire.
 ;
-; Why no on-calc UI: the calc already has a string editor. Building
-;   another one in asm was 200 lines of mistakes. Calc-native input is
-;   also structured (token stream), enabling a future math-notation
-;   pipeline desktop-side.
+; Why no on-calc UI: the calc already has a string editor and the deck
+;   provides slot management. Building either in asm was 200 lines of
+;   mistakes.
 ;
 ; Build:  just asm  programs/asm_chat/CHAT.z80
 ; Push:   just push-asm programs/asm_chat/CHAT.z80
@@ -31,20 +34,32 @@
 
 
 start:
+        ; --- Send Str1 if it exists -----------------------------------
         ld      hl, op1_str1
         rst     rMOV9TOOP1
         bcall(_ChkFindSym)
-        ret     c                       ; Str1 not defined; bail silently
+        jr      c, try_str2             ; Str1 missing; skip to Str2
 
-        ; _SendVarCmd reads the variable named by OP1. _ChkFindSym may
-        ; have left OP1 alone but reload to be defensive: silent-link
-        ; bcalls are documented to clobber OP-area scratch.
         ld      hl, op1_str1
+        rst     rMOV9TOOP1
+        bcall(_SendVarCmd)
+
+try_str2:
+        ; --- Send Str2 if it exists -----------------------------------
+        ld      hl, op1_str2
+        rst     rMOV9TOOP1
+        bcall(_ChkFindSym)
+        ret     c                       ; Str2 missing; done
+
+        ld      hl, op1_str2
         rst     rMOV9TOOP1
         bcall(_SendVarCmd)
         ret
 
 op1_str1:
         .db     StrngObj, tVarStrng, tStr1, 0, 0, 0, 0, 0, 0
+
+op1_str2:
+        .db     StrngObj, tVarStrng, tStr2, 0, 0, 0, 0, 0, 0
 
 .end

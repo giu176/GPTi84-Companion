@@ -1,0 +1,8 @@
+ClrHome
+Disp "PROMPT?
+Input Str1
+Disp "MATH?
+Input Str2
+Asm(prgmCHAT)
+Pause
+Disp Str0

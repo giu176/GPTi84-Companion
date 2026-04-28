@@ -62,6 +62,21 @@ push-asm FILE:
     just asm {{FILE}}
     just push {{ without_extension(FILE) }}.8xp
 
+# Tokenize a TI-BASIC source (.basic) into a .8Xp. NAME is the on-calc
+# program name (1-8 chars, A-Z and 0-9). Defaults to the source's basename.
+# Example: just basic programs/basic_deck/DECK.basic
+basic FILE NAME="":
+    @echo "==> tokenizing {{FILE}} as {{ if NAME == '' { uppercase(without_extension(file_name(FILE))) } else { NAME } }}"
+    {{PY}} tools/bastok.py build \
+        {{ if NAME == "" { uppercase(without_extension(file_name(FILE))) } else { NAME } }} \
+        {{FILE}} {{ without_extension(FILE) }}.8xp
+
+# Tokenize a BASIC source then push the resulting .8Xp to the calc.
+# Example: just push-basic programs/basic_deck/DECK.basic
+push-basic FILE NAME="":
+    just basic {{FILE}} {{NAME}}
+    just push {{ without_extension(FILE) }}.8xp
+
 # Push a .8Xp program to the calc. Default is FLAPPY.
 push FILE="programs/flappy_bird/FLAPPY.8xp":
     @echo "==> generating push script for {{FILE}}"
