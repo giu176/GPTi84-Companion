@@ -1,0 +1,14 @@
+name = "p1100"
+version = "0.1.0"
+defaultTargets = ["p1100"]
+
+[[lean_lib]]
+name = "P1100"
+
+[[lean_exe]]
+name = "p1100"
+root = "Main"
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"

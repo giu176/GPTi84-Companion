@@ -30,3 +30,4 @@ include(${CMAKE_CURRENT_LIST_DIR}/cmake/CPM.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/pico_app.cmake)
 
 add_pico_app(bringup)
+add_pico_app(dbus_bringup)
