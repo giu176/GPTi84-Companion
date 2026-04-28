@@ -169,10 +169,15 @@ def _respond_to_req(machine, hdr, on_req):
     if cmd != ACK:
         print("respond: expected ACK after DATA, got", hex(cmd)); return False
 
-    # TI-82 protocol ends here; native 0x73 expects EOT from us.
-    if machine != 0x82:
-        if not send_packet(EOT, machine=pc_machine):
-            print("respond: EOT failed"); return False
+    # In the calc-master REQ flow (this function), the calc-side asm
+    # explicitly _Get4Bytes the trailing EOT regardless of which silent-
+    # link protocol mode the OS is in. The "TI-82 protocol skips EOT"
+    # rule documented elsewhere in this file applies to PC-master sends
+    # (send_var / put_prog), where the calc-side flow ends without
+    # waiting for EOT. Here we always send so the calc never blocks on
+    # a missing 4-byte trailer.
+    if not send_packet(EOT, machine=pc_machine):
+        print("respond: EOT failed"); return False
     print("respond: done")
     return True
 
@@ -203,14 +208,20 @@ def listen_loop(name=None, expected_type=None, on_var=None, on_req=None,
         if len(name8) != 8:
             raise ValueError("name must be 8 bytes or a <=8-char str")
 
-    print("listen_loop: filter name=", name8, "type=",
-          hex(expected_type) if expected_type is not None else None)
+    if name8 is not None or expected_type is not None:
+        # Only log filter setup when one is actually in use; the bridge
+        # supervisor calls listen_loop with timeout_ms in a tight loop
+        # and doesn't need an entry print every iteration.
+        print("listen_loop: filter name=", name8, "type=",
+              hex(expected_type) if expected_type is not None else None)
     while True:
         idle()
         p = recv_packet(timeout_ms if timeout_ms else 60000)
         if p is None:
             if timeout_ms:
-                print("listen_loop: no traffic, returning")
+                # Idle timeout: return so the supervisor can run other
+                # work (LED tick, FrameReader poll). Common case in the
+                # bridge supervisor loop, so don't spam.
                 return
             continue
         machine, cmd, body = p

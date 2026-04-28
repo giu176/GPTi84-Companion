@@ -107,7 +107,7 @@ class FrameReader:
             # build. Treat EAGAIN as "no frame yet". Other OSError
             # (peer closed, oversize, real socket error) propagates.
             errno = e.args[0] if e.args else 0
-            print("FrameReader: OSError errno=", errno, "args=", e.args)
             if errno in (11, 35, 110):  # EAGAIN linux/darwin, ETIMEDOUT
                 return None
+            print("FrameReader: OSError errno=", errno, "args=", e.args)
             raise
