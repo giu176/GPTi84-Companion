@@ -116,6 +116,17 @@ chat-bridge NAME="" TYPE="":
     @echo "==> running on Pico (Ctrl-C to stop)"
     {{MPR}} run /tmp/ti84_e2e_bridge.py
 
+# Wire-only test for calc-master REQ. Runs listen_loop on the Pico with
+# a hardcoded on_req that always serves PAYLOAD as AppVar CHATIN. Pair
+# with `Asm(prgmREQTEST)` on the calc; expect the PAYLOAD text to appear
+# on the calc screen on row 6 plus "12345" status markers in column 15.
+# Example: just reqtest "hello there"
+reqtest PAYLOAD="hello calc":
+    @echo "==> generating reqtest script (payload={{PAYLOAD}})"
+    {{PY}} tools/build_e2e.py reqtest "{{PAYLOAD}}" > /tmp/ti84_e2e_reqtest.py
+    @echo "==> running on Pico (Ctrl-C to stop)"
+    {{MPR}} run /tmp/ti84_e2e_reqtest.py
+
 # Full e2e gate: host tests + push FLAPPY + roundtrip FLAPPY + roundtrip SEX.
 test-e2e: test
     just push  programs/flappy_bird/FLAPPY.8xp

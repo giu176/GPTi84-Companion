@@ -1,0 +1,249 @@
+; REQTEST.z80: prove calc-master REQ over DBUS works against the Pico's
+; existing _respond_to_req. This is a standalone test program: once the
+; bcall sequence is shown to work in isolation, the same flow gets
+; integrated into CHAT.z80's await_response.
+;
+; Sequence (verified against references/wikiti/):
+;   1. _SendRAMCmd      (4ED3) A=0xA2 (REQ), HL=var_hdr, DE=13
+;                              : sends REQ + 13-byte var-header body, waits ACK
+;   2a. _Get4Bytes      (4EF4) : consumes 4-byte VAR preamble into header,
+;                                no ACK. (_GetDataPacket rejected our VAR
+;                                preamble silently in v1; switching to the
+;                                explicit two-step that matches what the
+;                                wiki page actually says.)
+;   2b. _GetSmallPacket (4EEB) : reads 13-byte VAR body into ioData, using
+;                                the size word that _Get4Bytes left at
+;                                header+2. ACKs on good checksum.
+;   3.  _Send4BytePacket (4EDC) H=0x09 (CTS) : sends CTS, waits ACK
+;   4.  _GetDataPacket  (4EEE) DE=data_buf, BC=N
+;                              : N from var hdr's size_le16 (ioData+0/+1)
+;   5.  _Get4Bytes      (4EF4) : consumes the trailing EOT (cmd 0x92), no ACK
+;
+; Packet command bytes (per src/packet.py + wikiti):
+;   REQ=A2  VAR=06  CTS=09  DATA=15  ACK=56  SKIP=36  EOT=92
+;
+; Var header layout (TI-83+/84+ form, 13 bytes total):
+;   [size_lo][size_hi][type][name 0..7][version=0][flags=0]
+;
+; We REQ AppVar "CHATIN" (type 0x15). The Pico's listen_loop has a name
+; filter on this; if CHATIN doesn't yet exist on Pico-side, the Pico
+; replies with SKIP (0x36), which our flow handles by aborting cleanly.
+;
+; Build:  just asm  programs/asm_reqtest/REQTEST.z80
+; Push:   just push-asm programs/asm_reqtest/REQTEST.z80
+;
+; Test:   1. just sync                (only if Pico code changed)
+;         2. just relay-echo          (or any tool that pre-seeds CHATIN)
+;         3. on calc: Asm(prgmREQTEST)
+;         4. expect screen to render the AppVar bytes plus a status line.
+
+.nolist
+#include "ti83plus.inc"
+.list
+
+.org    $9D93
+.db     t2ByteTok, tAsmCmp
+
+APPVAR_TYPE     .equ    $15
+REQ_CMD         .equ    $A2
+CTS_CMD         .equ    $09
+
+start:
+        bcall(_ClrLCDFull)
+        ld      hl, 0
+        ld      (curRow), hl
+        ld      hl, banner
+        bcall(_PutS)
+        bcall(_NewLine)
+
+        ; --- Step 1: send REQ for AppVar CHATIN -----------------------
+        ; SendRAMCmd recommends zeroing sndRecState first to avoid a
+        ; documented edge case (varClass=0Ah, sndRecState=08h, big DE).
+        xor     a
+        ld      (sndRecState), a
+
+        ld      hl, $0100                ; row=1, col=0
+        ld      (curRow), hl
+        ld      hl, msg_step1
+        bcall(_PutS)
+
+        ld      a, REQ_CMD
+        ld      hl, var_hdr_req
+        ld      de, 13
+        bcall(_SendRAMCmd)               ; throws ERR:LINK on failure;
+                                         ; if we come back, REQ was ACKed.
+
+        ; Mark step 1 OK
+        ld      hl, $0F01                ; row=1, col=15
+        ld      (curRow), hl
+        ld      a, '1'
+        bcall(_PutC)
+
+        ; --- Step 2: receive VAR reply -------------------------------
+        ;   2a. _Get4Bytes consumes [machine,cmd,size_lo,size_hi] preamble
+        ;       into the header buffer at 8674h. No ACK sent.
+        ;   2b. _GetSmallPacket reads `(header+2)` body bytes (= 13 for an
+        ;       84+ var header) into ioData at 867Dh. ACKs on good cksum.
+        ld      hl, $0200
+        ld      (curRow), hl
+        ld      hl, msg_step2
+        bcall(_PutS)
+
+        bcall(_Get4Bytes)                ; preamble -> header+0..+3
+
+        ; '2a' marker: preamble landed.
+        ld      hl, $0E02
+        ld      (curRow), hl
+        ld      a, '2'
+        bcall(_PutC)
+        ld      a, 'a'
+        bcall(_PutC)
+
+        bcall(_GetSmallPacket)           ; body -> ioData; ACKs on success
+
+        ; ioData+2 should be APPVAR_TYPE (0x15) for our request.
+        ld      a, (ioData + 2)
+        cp      APPVAR_TYPE
+        jr      z, _step2_ok
+        ld      hl, $0F02
+        ld      (curRow), hl
+        ld      a, 'T'
+        bcall(_PutC)
+_step2_ok:
+        ld      hl, $0F02
+        ld      (curRow), hl
+        ld      a, '2'
+        bcall(_PutC)
+
+        ; --- Step 3: send CTS, wait for ACK ---------------------------
+        ld      hl, $0300
+        ld      (curRow), hl
+        ld      hl, msg_step3
+        bcall(_PutS)
+
+        ld      h, CTS_CMD
+        bcall(_Send4BytePacket)
+
+        ld      hl, $0F03
+        ld      (curRow), hl
+        ld      a, '3'
+        bcall(_PutC)
+
+        ; --- Step 4: receive DATA reply. Same pattern as step 2 since
+        ; _GetDataPacket rejected our VAR preamble; assume same issue
+        ; for DATA. _Get4Bytes consumes preamble, _GetSmallPacket reads
+        ; up to 14 body bytes into ioData and ACKs. We rely on the
+        ; payload being small (<=14 bytes) for v1; longer payloads will
+        ; need a different receive primitive.
+        ld      hl, $0400
+        ld      (curRow), hl
+        ld      hl, msg_step4
+        bcall(_PutS)
+
+        bcall(_Get4Bytes)                ; preamble -> header
+
+        ; '4a' marker: preamble landed.
+        ld      hl, $0E04
+        ld      (curRow), hl
+        ld      a, '4'
+        bcall(_PutC)
+        ld      a, 'a'
+        bcall(_PutC)
+
+        bcall(_GetSmallPacket)           ; body -> ioData; ACKs
+
+        ; Stash the body size that was just received. The size word
+        ; comes from header+2/+3 (where _Get4Bytes wrote the preamble).
+        ld      a, (header + 2)
+        ld      c, a
+        ld      a, (header + 3)
+        ld      b, a
+        ld      (recv_len), bc
+
+        ld      hl, $0F04
+        ld      (curRow), hl
+        ld      a, '4'
+        bcall(_PutC)
+
+        ; --- Step 5: consume trailing EOT -----------------------------
+        ; Pico (machine 0x73) sends EOT after the final ACK. _Get4Bytes
+        ; consumes a 4-byte packet without ACKing.
+        ld      hl, $0500
+        ld      (curRow), hl
+        ld      hl, msg_step5
+        bcall(_PutS)
+
+        bcall(_Get4Bytes)
+
+        ld      hl, $0F05
+        ld      (curRow), hl
+        ld      a, '5'
+        bcall(_PutC)
+
+        ; --- Render received data on row 6 ----------------------------
+        ; DATA body now lives at ioData (written by _GetSmallPacket).
+        ; Wire format for AppVars is [size_le16][bytes]. recv_len is the
+        ; total bytes _GetSmallPacket wrote (including the 2-byte size
+        ; prefix). For ASCII render: NUL at ioData+recv_len, print
+        ; starting at ioData+2. If recv_len < 3, print "[empty]".
+        ld      hl, $0006
+        ld      (curRow), hl
+
+        ld      bc, (recv_len)
+        ld      a, b
+        or      a
+        jr      nz, _render_full         ; > 255, definitely full payload
+        ld      a, c
+        cp      3
+        jr      nc, _render_full
+        ld      hl, msg_empty
+        bcall(_PutS)
+        jr      _render_done
+
+_render_full:
+        ; NUL-terminate at ioData + recv_len. ioData is at 867Dh; up to
+        ; 14 bytes of body fit (_GetSmallPacket caps at that). 16-byte
+        ; ioData scratch + ioNewData at 8689h gives us breathing room.
+        ld      hl, ioData
+        add     hl, bc
+        ld      (hl), 0
+        ld      hl, ioData + 2
+        bcall(_PutS)
+
+_render_done:
+        ; Wait for any key, then exit cleanly.
+        bcall(_GetKey)
+        bcall(_ClrLCDFull)
+        ret
+
+
+; --- data ---
+
+banner:    .db "REQTEST CHATIN", 0
+msg_step1: .db "1 SendRAMCmd REQ", 0
+msg_step2: .db "2 Get4B+SmallPkt V", 0
+msg_step3: .db "3 Send4Byte CTS", 0
+msg_step4: .db "4 Get4B+SmallPkt D", 0
+msg_step5: .db "5 Get4Bytes EOT", 0
+msg_empty: .db "[empty]", 0
+
+; REQ var header. The size field for a REQ is conventionally 0 (calc
+; says "expected size unknown; you tell me"). Type 0x15 = AppVar.
+; Name: "CHATIN" zero-padded to 8 bytes. Version + flags = 0.
+var_hdr_req:
+        .db     0, 0                     ; size_le16 (REQ: 0)
+        .db     APPVAR_TYPE              ; type
+        .db     "CHATIN", 0, 0           ; 8-byte name
+        .db     0, 0                     ; version, flags
+
+; (Both the VAR header and the DATA body land in ioData at 867Dh,
+; courtesy of _GetSmallPacket; we don't need a local buffer. The VAR
+; header is overwritten when DATA arrives, but we already extracted
+; everything we needed from the VAR.)
+
+; Actual count of body bytes _GetSmallPacket placed into ioData on
+; the DATA receive (used for render).
+recv_len:
+        .dw     0
+
+.end
