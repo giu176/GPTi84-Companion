@@ -147,6 +147,16 @@ True
 After the call, `PRGM -> EXEC -> SEX` shows the program and running it
 prints `SEXY)LOL` to the home screen.
 
+Stress-tested at meaningful sizes: a 1754-byte BASIC Flappy Bird port
+(`programs/flappy_bird/FLAPPY.8xp`) was pushed in ~3 seconds, found in
+the program menu, and ran correctly on a real 84+. A 2450-byte locked
+program (`FLAPBIRD.8xp`) was also pushed and pulled back; the
+round-tripped bytes were byte-identical to what was sent, confirming
+zero wire corruption at multi-KB payload sizes. Throughput is roughly
+600 bytes/sec sustained on the DATA packet, with no inter-byte gaps
+needed and the 20ms post-CTS sleep sufficient at 50x the payload size
+of the original real-number test.
+
 Process for getting the payload bytes from a `.8Xp` file:
 
 1. The `.8Xp` file layout is `[8-byte sig "**TI83F*"][3-byte sub 1A 0A 00]
