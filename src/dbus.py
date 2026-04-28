@@ -1,8 +1,8 @@
 from machine import Pin
 import time
 
-TIP  = 6   # "red" / 0-line
-RING = 7   # "white" / 1-line
+TIP  = 6   # 0-line
+RING = 7   # 1-line
 
 # Start as inputs with pullups (released, pullup wins).
 # The Pico has no external pullups on these pins, so without Pin.PULL_UP
@@ -277,9 +277,13 @@ def recv_packet(timeout_ms=3000):
 VAR  = 0x06
 CTS  = 0x09
 DATA = 0x15
+VER  = 0x2D  # silent: request OS/hardware versions
 SKIP = 0x36
 ACK  = 0x56
 ERR  = 0x5A
+RDY  = 0x68  # silent: "are you ready?" -- calc replies ACK if listening
+SCR  = 0x6D  # silent: request screenshot
+DEL  = 0x88  # silent: delete variable
 EOT  = 0x92
 REQ  = 0xA2
 RTS  = 0xC9
@@ -511,12 +515,23 @@ def send_var(type_id, name8, data, calc_machine=0x82, timeout_ms=5000):
 
     print("sending DATA")
     if not send_packet(DATA, data, machine=pc_machine):
-        print("DATA send failed"); return False
+        # send_packet returns False if a single bit's ack timed out, which is
+        # what "Error in Xmit" looks like from our side: the calc gave up
+        # mid-packet and stopped pulling its line. Dump where we are so we can
+        # tell whether it died near the start, middle, or end.
+        print("DATA send failed; lines=", read())
+        return False
 
     p = recv_packet(timeout_ms)
-    if p is None: print("no ACK after DATA"); return False
+    if p is None:
+        print("no ACK after DATA; lines=", read())
+        return False
     _, cmd, _ = p
     print("pkt: cmd=", hex(cmd))
+    if cmd == SKIP:
+        print("calc rejected DATA: SKIP/EXIT")
+        send_packet(ACK, machine=pc_machine)
+        return False
     if cmd != ACK:
         print("expected ACK, got", hex(cmd)); return False
 
@@ -540,6 +555,53 @@ def put_l1_83p(values):
     protocol does."""
     return send_var(T_LIST, list_name_82(0), encode_real_list(values),
                     calc_machine=0x73)
+
+
+# Real-name field for variables A..Z on the 8-byte name field. The 83+/84+
+# spec example uses 0x41..0x5A (ASCII 'A'..'Z') in slot 0 and zero-pads.
+def real_name(letter):
+    if len(letter) != 1 or not ('A' <= letter <= 'Z'):
+        raise ValueError("letter must be a single uppercase A..Z")
+    return bytes([ord(letter)]) + b'\x00' * 7
+
+
+def put_real(letter, value, calc_machine=0x82):
+    """Send a single real number to var A..Z. Smaller payload than a list,
+    so it isolates 'are headers OK?' from 'is list payload OK?' when
+    debugging Error in Xmit."""
+    return send_var(T_REAL, real_name(letter), encode_real(value),
+                    calc_machine=calc_machine)
+
+
+def put_real_83p(letter, value):
+    return put_real(letter, value, calc_machine=0x73)
+
+
+def ready_check(calc_machine=0x73, timeout_ms=3000):
+    """Send a 'check ready' (0x68) packet. Returns True if calc replies ACK,
+    meaning it's in silent-mode receive and willing to accept commands.
+    The 84+ only responds to RTS/REQ once silent mode is active; this is the
+    cheapest way to confirm that without sending a full variable handshake."""
+    idle()
+    pc_machine = pc_id_for(calc_machine)
+    print("sending RDY (0x68) as machine", hex(pc_machine))
+    if not send_packet(RDY, machine=pc_machine):
+        print("RDY send failed; lines=", read())
+        return False
+    p = recv_packet(timeout_ms)
+    if p is None:
+        print("no reply to RDY within", timeout_ms, "ms; lines=", read())
+        return False
+    _, cmd, body = p
+    print("pkt: cmd=", hex(cmd), "body=", bytes(body))
+    return cmd == ACK
+
+
+def ready_check_82():
+    """RDY against TI-82 machine ID. Per linkguide the TI-82 doesn't implement
+    the silent command set at all -- this should fail. Useful for confirming
+    the calc is in 84+ native (0x73) mode vs TI-82 compat (0x82) mode."""
+    return ready_check(calc_machine=0x82)
 
 
 def first_bits(n=16, timeout_ms=10000):
