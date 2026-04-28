@@ -66,47 +66,41 @@ These work end-to-end against a real TI-84+:
 These flows exercise both directions of the bit layer and exercise our
 checksum and framing code in both encoding and decoding directions.
 
-## PC-initiated send (NOT working)
+## PC-initiated send (native real upload working)
 
-Sending a variable from the Pico to the calc (`send_var` / `put_real` /
-`put_l1`) does not yet succeed. Two distinct failure modes have been
-observed depending on the calc's state:
-
-### Calc cold (home screen, not in receive mode)
+The native TI-83+/TI-84+ upload path now succeeds for at least a simple
+real variable send:
 
 ```
-sending RTS for type=0x0 name=b'A\x00...' len=9
-pkt: cmd=0x56                 # ACK from calc, our RTS was accepted
-no CTS within 10000 ms
-idle now: lines=(1, 1)
+>>> dbus.put_real_83p('A', 1.5, quiet=True)
+sending DATA
+pkt: cmd= 0x56
+done
+True
 ```
 
-The calc ACKs the RTS but never proceeds to send CTS or SKIP. The lines
-return to idle. The calc displays no error.
-
-Interpretation: on the 83+/84+, "silent" commands (RTS/REQ/RDY) are only
-fully honored when the calc has been put into receive mode. A cold calc
-parses our RTS, ACKs it as a well-formed packet, but does not act on it.
-
-### Calc in receive mode (`2nd LINK RECEIVE`)
+The critical discovery was that the calc *was* sending CTS after RTS, but
+our packet parser was discarding it. After `RTS`, a traced reply showed:
 
 ```
-sending RTS for type=0x0 name=b'A\x00...' len=9
-no ACK after RTS
-False
+[115, 9, 13, 0]   # 73 09 0D 00
 ```
 
-The calc never sends ACK and **displays "Error in Xmit"** on screen.
+That is a valid `CTS` packet on this link: command `0x09` with a nonzero
+16-bit length/status field but no trailing body or checksum. Our original
+`recv_packet()` trusted the length field unconditionally, waited for 13
+data bytes that never existed, and then reported a misleading "no CTS"
+timeout. The fix was to parse no-data commands (`CTS`, `ACK`, `ERR`, `RDY`,
+`SCR`, `EOT`, `VER`) by command semantics rather than by the raw length
+word alone.
 
-Interpretation: the calc is reading our RTS bytes bit-by-bit and at some
-point bails out -- either a checksum mismatch on its side, a bit-level
-timing miss, or a header field it does not like. We never see what made
-it bail because the failure displaces the ACK we were waiting for.
+Related diagnostics that helped pin this down:
 
-The transition between the two failure modes (cold -> ACK with no
-follow-up; receive-mode -> hard reject mid-packet) is itself useful
-information: in receive mode the calc is stricter and gates more
-validation behind its accept path.
+- `ready_check()` succeeds on the native 83+/84+ path with machine ID `0x23`.
+- `del_real_83p('A')` succeeds with the same 13-byte native header shape as
+  `RTS`, proving the calc accepts our machine ID and header encoding.
+- `probe_rts_real_83p('A', 1.5)` showed the calc really was transmitting CTS;
+  the bug was entirely in our packet receive logic.
 
 ## What we have ruled out
 
@@ -124,38 +118,33 @@ validation behind its accept path.
 - **Checksum value for the example RTS**: `0x4A`, matches.
 - **List-name encoding (`5D 00` -> L1)**: matches both the linkguide note
   and our verified token reference.
+- **Upload handshake ordering**: `send_var()` already followed the correct
+  `RTS -> ACK -> CTS -> ACK -> DATA -> ACK -> EOT` sequence; the failure was
+  not "sending DATA too early".
+- **RTS size field**: for real uploads we already sent `09 00`, i.e. the
+  future DATA payload length, not the 13-byte header size.
+- **Whether the calc was actually sending CTS**: yes. `probe_rts_real_83p()`
+  captured `73 09 0D 00` immediately after the initial ACK.
 
-## What we have NOT yet ruled out
+## What we have NOT yet ruled out / not yet re-verified
 
-- **Inter-bit timing under MicroPython interpreter overhead**: our
-  `send_bit` busy-waits using `pin.value()` calls in a Python loop, which
-  is much slower than the C/asm reference implementations. The calc may
-  tolerate this on receive (where it controls the pace) but be strict
-  about it on send.
-- **Inter-byte timing**: we have no deliberate gap between bytes. Some
-  receivers want a small idle window between bytes for their own
-  bookkeeping.
-- **Slow rise on line release**: we rely on `PULL_UP`-only rise, no
-  active drive-high. The receive-side comment at the top of `dbus.py`
-  notes this caused glitches before; the same effect could be hurting
-  send under heavier wire loading.
-- **Power supply / voltage compatibility**: the 84+ runs at 5V on its
-  link port hardware historically, but the open-collector wire-OR design
-  is supposed to be tolerant of 3.3V drivers. Worth confirming with a
-  scope before pursuing software theories further.
-- **Whether the failing byte is in the header, the checksum, or an
-  earlier framing byte**: we currently abort `send_var` on the first
-  missing ACK without telemetry on which byte the calc was reading when
-  it bailed. Adding `recv_byte_traced`-equivalent logging on the reply
-  side, plus a per-byte hex dump on the send side, is the next concrete
-  diagnostic step.
+- **Larger outbound payloads**: native real upload is proven; list/matrix/
+  longer DATA payloads should still be re-run explicitly.
+- **Cold-calc behavior**: earlier testing showed a cold home-screen calc can
+  ACK RTS without following through. The currently proven success case is the
+  native upload path exercised during this debugging session, not every calc
+  UI state.
+- **Electrical margins under sustained send load**: the parser bug was the
+  blocking issue for real upload, but scope-level confirmation of rise times
+  and line margins could still matter for larger/faster transfers.
 
 ## Source map
 
 - `src/dbus.py` -- single MicroPython module containing the bit layer,
-  packet layer, calc-initiated handshake (`recv_var`, `req_var`), and
-  the not-yet-working PC-initiated send (`send_var`, `put_real`,
-  `put_l1`, plus their `_83p` variants on machine 0x73).
+  packet layer, calc-initiated handshake (`recv_var`, `req_var`), native
+  PC-initiated send (`send_var`, `put_real`, `put_l1`, plus their `_83p`
+  variants on machine 0x73), and several upload diagnostics (`ready_check`,
+  `delete_var`, `probe_rts_reply`, `recv_n_traced`).
 - `references/linkguide/` -- vendored copy of the TI Link Guide. Key
   pages: `ti83+/silent.html`, `ti83+/packet.html`, `ti83+/vars.html`,
   `ti82/silent.html`, `ti82/packet.html`.
@@ -167,7 +156,10 @@ validation behind its accept path.
 | `recv_var()`                     | calc -> Pico   | working  |
 | `req_var(type, name)` / `get_l1()` | Pico -> calc REQ, then calc -> Pico | working |
 | `ready_check()` (RDY 0x68)       | Pico -> calc   | useful probe; only ACKs in silent-receive mode |
-| `send_var(...)` / `put_real(...)` / `put_l1(...)` | Pico -> calc | NOT working |
-| `put_real_83p(...)` / `put_l1_83p(...)` | Pico -> calc, machine 0x73 | NOT working |
+| `send_var(...)` / `put_real(...)` | Pico -> calc | working for native real upload |
+| `put_real_83p(...)` | Pico -> calc, machine 0x73 | working |
+| `put_l1(...)` / `put_l1_83p(...)` | Pico -> calc | unverified after parser fix |
+| `delete_var(...)` / `del_real_83p()` | Pico -> calc | working diagnostic |
+| `probe_rts_reply(...)` / `probe_rts_real_83p()` | Pico -> calc | working diagnostic |
 | `snoop()`                        | passive line monitor | working diagnostic |
 | `first_bits(n)`                  | one-shot edge logger | working diagnostic |

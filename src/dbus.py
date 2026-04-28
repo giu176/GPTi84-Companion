@@ -161,6 +161,9 @@ def checksum(data):
     return s
 
 
+SEND_BYTE_GAP_MS = 0
+
+
 MACHINE_ID = 0x23   # we are "computer sending TI-83+/84+ data"
 
 
@@ -170,6 +173,22 @@ MACHINE_ID = 0x23   # we are "computer sending TI-83+/84+ data"
 def pc_id_for(calc_id):
     pairs = {0x82: 0x02, 0x83: 0x03, 0x73: 0x23, 0x86: 0x06, 0x88: 0x08, 0x98: 0x88}
     return pairs.get(calc_id, 0x23)
+
+
+def packet_bytes(cmd, data=b'', machine=MACHINE_ID):
+    """Return the exact bytes that send_packet will place on the wire."""
+    n = len(data)
+    out = bytearray([machine, cmd, n & 0xFF, (n >> 8) & 0xFF])
+    if n:
+        out.extend(data)
+        cs = checksum(data)
+        out.append(cs & 0xFF)
+        out.append((cs >> 8) & 0xFF)
+    return bytes(out)
+
+
+def hex_bytes(buf):
+    return " ".join("{:02X}".format(b) for b in buf)
 
 
 def parse_real_parts(b):
@@ -233,16 +252,14 @@ def parse_real_list_str(data):
 
 def send_packet(cmd, data=b'', machine=MACHINE_ID):
     """Send a DBUS packet. Returns True on success."""
-    n = len(data)
-    hdr = bytes([machine, cmd, n & 0xFF, (n >> 8) & 0xFF])
-    for b in hdr:
-        if not send_byte(b): return False
-    if n:
-        for b in data:
-            if not send_byte(b): return False
-        cs = checksum(data)
-        if not send_byte(cs & 0xFF): return False
-        if not send_byte((cs >> 8) & 0xFF): return False
+    pkt = packet_bytes(cmd, data, machine=machine)
+    for i, b in enumerate(pkt):
+        if not send_byte(b):
+            print("send_packet stalled at byte", i, "of", len(pkt), "value=", hex(b))
+            print("packet:", hex_bytes(pkt))
+            return False
+        if SEND_BYTE_GAP_MS and i + 1 != len(pkt):
+            time.sleep_ms(SEND_BYTE_GAP_MS)
     return True
 
 
@@ -257,6 +274,15 @@ def recv_packet(timeout_ms=3000):
     hi = recv_byte(timeout_ms)
     if hi is None: return None
     n = lo | (hi << 8)
+
+    # Per the TI packet spec, some commands never carry data even if the
+    # 16-bit length/status field is nonzero. On a TI-84+, CTS after RTS can
+    # arrive as 73 09 0D 00 with no trailing body or checksum. If we trust the
+    # length word unconditionally, we block waiting for 13 bytes that will never
+    # arrive and miss the handshake.
+    if cmd in (0x09, 0x56, 0x5A, 0x68, 0x6D, 0x92, 0x2D):
+        return (machine, cmd, b'')
+
     data = bytearray()
     if n:
         for _ in range(n):
@@ -468,37 +494,58 @@ def encode_real_list(values):
     return bytes(out)
 
 
-def send_var(type_id, name8, data, calc_machine=0x82, timeout_ms=5000):
+def send_var(type_id, name8, data, calc_machine=0x82, timeout_ms=5000,
+             quiet=False):
     """PC-initiated send: deliver a variable to the calc.
     type_id is e.g. T_LIST; name8 is the 8-byte name field; data is the
     variable payload (count-prefixed for lists, raw real for reals, etc).
-    Returns True on success."""
+    Returns True on success.
+
+    quiet=True suppresses logging across the time-critical RTS->ACK->CTS
+    window. USB-serial prints under MicroPython can take several ms each;
+    that delay is enough that the calc, having ACKed our RTS, starts trying
+    to send CTS before we're back in the recv loop, gives up bit-bang
+    handshaking on its first CTS bit, and displays 'Error in Xmit' instead
+    of completing the transfer. With quiet=True we collect timestamps and
+    cmd bytes inline and only print after the handshake settles."""
     idle()
     pc_machine = pc_id_for(calc_machine)
     proto = 82 if calc_machine == 0x82 else 83
     var_hdr = make_var_header(len(data), type_id, name8, proto=proto)
-    print("sending RTS for type=", hex(type_id), "name=", bytes(name8), "len=", len(data))
+    if not quiet:
+        print("sending RTS for type=", hex(type_id), "name=", bytes(name8), "len=", len(data))
+        print("RTS bytes:", hex_bytes(packet_bytes(RTS, var_hdr, machine=pc_machine)))
+    t_rts_start = time.ticks_us()
     if not send_packet(RTS, var_hdr, machine=pc_machine):
         print("RTS send failed"); return False
+    t_rts_end = time.ticks_us()
 
     p = recv_packet(timeout_ms)
-    if p is None: print("no ACK after RTS"); return False
+    t_ack_done = time.ticks_us()
+    if p is None:
+        print("no ACK after RTS")
+        print("timing: send RTS=", time.ticks_diff(t_rts_end, t_rts_start), "us")
+        print("idle now: lines=", read())
+        return False
     _, cmd, _ = p
-    print("pkt: cmd=", hex(cmd))
     if cmd != ACK:
         print("expected ACK, got", hex(cmd)); return False
 
-    # Calc may take a moment after ACK to decide whether to send CTS or SKIP
-    # (it has to look up if the var name exists, check archive flags, etc).
-    # Use a longer timeout here than the per-packet default.
-    p = recv_packet(timeout_ms * 2)
-    if p is None:
+    # Time-critical: do NOT print here. Go straight back to recv for CTS.
+    p2 = recv_packet(timeout_ms * 2)
+    t_cts_done = time.ticks_us()
+    if p2 is None:
         print("no CTS within", timeout_ms * 2, "ms")
-        # If we got *some* bytes but not a full packet, dump line state.
+        print("timing: send RTS=", time.ticks_diff(t_rts_end, t_rts_start),
+              "us, ACK recv=", time.ticks_diff(t_ack_done, t_rts_end), "us")
         print("idle now: lines=", read())
         return False
-    _, cmd, body = p
-    print("pkt: cmd=", hex(cmd), "body_len=", len(body))
+    _, cmd, body = p2
+    if not quiet:
+        print("RTS sent in", time.ticks_diff(t_rts_end, t_rts_start), "us")
+        print("ACK received", time.ticks_diff(t_ack_done, t_rts_end), "us after RTS done")
+        print("CTS received", time.ticks_diff(t_cts_done, t_ack_done), "us after ACK done")
+        print("pkt: cmd=", hex(cmd), "body_len=", len(body))
     if cmd == SKIP:
         print("calc rejected: SKIP/EXIT, body=", bytes(body))
         send_packet(ACK, machine=pc_machine)
@@ -543,18 +590,19 @@ def send_var(type_id, name8, data, calc_machine=0x82, timeout_ms=5000):
     return True
 
 
-def put_l1(values):
+def put_l1(values, quiet=False):
     """Convenience: write a real-number list into L1 (TI-82 protocol)."""
-    return send_var(T_LIST, list_name_82(0), encode_real_list(values))
+    return send_var(T_LIST, list_name_82(0), encode_real_list(values),
+                    quiet=quiet)
 
 
-def put_l1_83p(values):
+def put_l1_83p(values, quiet=False):
     """Same as put_l1 but using TI-83+/84+ native protocol (machine ID 0x73).
     Use this if put_l1 fails with 'no ACK after RTS' -- the 84+ in TI-82
     compat mode does not respond to PC-initiated RTS, but its native silent
     protocol does."""
     return send_var(T_LIST, list_name_82(0), encode_real_list(values),
-                    calc_machine=0x73)
+                    calc_machine=0x73, quiet=quiet)
 
 
 # Real-name field for variables A..Z on the 8-byte name field. The 83+/84+
@@ -565,16 +613,111 @@ def real_name(letter):
     return bytes([ord(letter)]) + b'\x00' * 7
 
 
-def put_real(letter, value, calc_machine=0x82):
+def put_real(letter, value, calc_machine=0x82, quiet=False):
     """Send a single real number to var A..Z. Smaller payload than a list,
     so it isolates 'are headers OK?' from 'is list payload OK?' when
     debugging Error in Xmit."""
     return send_var(T_REAL, real_name(letter), encode_real(value),
-                    calc_machine=calc_machine)
+                    calc_machine=calc_machine, quiet=quiet)
 
 
-def put_real_83p(letter, value):
-    return put_real(letter, value, calc_machine=0x73)
+def put_real_83p(letter, value, quiet=False):
+    return put_real(letter, value, calc_machine=0x73, quiet=quiet)
+
+
+def delete_var(type_id, name8, calc_machine=0x73, timeout_ms=3000):
+    """Send a silent delete command for a variable header.
+
+    This is a useful upload diagnostic on 83+/84+: it exercises the same
+    native machine ID and header encoding as RTS, but the calc should answer
+    with ACK/ACK instead of entering the RTS->CTS->DATA handshake.
+    """
+    idle()
+    pc_machine = pc_id_for(calc_machine)
+    proto = 82 if calc_machine == 0x82 else 83
+    hdr = make_var_header(0, type_id, name8, proto=proto)
+    print("sending DEL for type=", hex(type_id), "name=", bytes(name8))
+    print("DEL bytes:", hex_bytes(packet_bytes(DEL, hdr, machine=pc_machine)))
+    if not send_packet(DEL, hdr, machine=pc_machine):
+        print("DEL send failed; lines=", read())
+        return False
+
+    p = recv_packet(timeout_ms)
+    if p is None:
+        print("no first ACK after DEL; lines=", read())
+        return False
+    _, cmd, body = p
+    print("pkt1: cmd=", hex(cmd), "body=", bytes(body))
+    if cmd != ACK:
+        print("expected ACK, got", hex(cmd))
+        return False
+
+    p = recv_packet(timeout_ms)
+    if p is None:
+        print("no second ACK after DEL; lines=", read())
+        return False
+    _, cmd, body = p
+    print("pkt2: cmd=", hex(cmd), "body=", bytes(body))
+    if cmd != ACK:
+        print("expected second ACK, got", hex(cmd))
+        return False
+
+    print("delete handshake done")
+    return True
+
+
+def del_real_83p(letter):
+    return delete_var(T_REAL, real_name(letter), calc_machine=0x73)
+
+
+def del_l1_83p():
+    return delete_var(T_LIST, list_name_82(0), calc_machine=0x73)
+
+
+def probe_rts_reply(type_id, name8, data_len, calc_machine=0x73,
+                    timeout_ms=3000, traced_bytes=6):
+    """Send RTS, receive the initial ACK, then trace the calc's next bytes.
+
+    This is a diagnostic for cases where the calc ACKs RTS but never yields a
+    full CTS/SKIP packet through recv_packet(). If the calc starts sending a
+    follow-up packet and stalls mid-byte or mid-packet, recv_n_traced() will
+    show how far it got.
+    """
+    idle()
+    pc_machine = pc_id_for(calc_machine)
+    proto = 82 if calc_machine == 0x82 else 83
+    hdr = make_var_header(data_len, type_id, name8, proto=proto)
+    print("probing RTS reply for type=", hex(type_id), "name=", bytes(name8),
+          "len=", data_len)
+    print("RTS bytes:", hex_bytes(packet_bytes(RTS, hdr, machine=pc_machine)))
+    if not send_packet(RTS, hdr, machine=pc_machine):
+        print("RTS send failed; lines=", read())
+        return None
+
+    p = recv_packet(timeout_ms)
+    if p is None:
+        print("no ACK after RTS; lines=", read())
+        return None
+    _, cmd, body = p
+    print("ack pkt: cmd=", hex(cmd), "body=", bytes(body))
+    if cmd != ACK:
+        print("expected ACK, got", hex(cmd))
+        return None
+
+    print("tracing next", traced_bytes, "bytes from calc...")
+    return recv_n_traced(traced_bytes, timeout_ms)
+
+
+def probe_rts_real_83p(letter, value=0.0, timeout_ms=3000, traced_bytes=6):
+    return probe_rts_reply(T_REAL, real_name(letter), len(encode_real(value)),
+                           calc_machine=0x73, timeout_ms=timeout_ms,
+                           traced_bytes=traced_bytes)
+
+
+def probe_rts_l1_83p(values, timeout_ms=3000, traced_bytes=6):
+    return probe_rts_reply(T_LIST, list_name_82(0), len(encode_real_list(values)),
+                           calc_machine=0x73, timeout_ms=timeout_ms,
+                           traced_bytes=traced_bytes)
 
 
 def ready_check(calc_machine=0x73, timeout_ms=3000):
@@ -585,6 +728,7 @@ def ready_check(calc_machine=0x73, timeout_ms=3000):
     idle()
     pc_machine = pc_id_for(calc_machine)
     print("sending RDY (0x68) as machine", hex(pc_machine))
+    print("RDY bytes:", hex_bytes(packet_bytes(RDY, machine=pc_machine)))
     if not send_packet(RDY, machine=pc_machine):
         print("RDY send failed; lines=", read())
         return False
@@ -602,6 +746,15 @@ def ready_check_82():
     the silent command set at all -- this should fail. Useful for confirming
     the calc is in 84+ native (0x73) mode vs TI-82 compat (0x82) mode."""
     return ready_check(calc_machine=0x82)
+
+
+def set_send_byte_gap(ms):
+    """Set an inter-byte gap for send_packet, useful for timing probes."""
+    global SEND_BYTE_GAP_MS
+    if ms < 0:
+        raise ValueError("gap must be >= 0")
+    SEND_BYTE_GAP_MS = ms
+    print("SEND_BYTE_GAP_MS=", SEND_BYTE_GAP_MS)
 
 
 def first_bits(n=16, timeout_ms=10000):
