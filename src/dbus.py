@@ -297,11 +297,16 @@ def list_name_82(idx):
     return bytes([0x5D, idx]) + b'\x00' * 6
 
 
-def make_var_header(data_size, type_id, name8):
-    """11-byte variable header used in REQ/VAR/RTS data fields."""
+def make_var_header(data_size, type_id, name8, proto=82):
+    """Variable header used in REQ/VAR/RTS data fields.
+    TI-82 form is 11 bytes: [size_le16][type][name 8].
+    TI-83+/84+ form is 13 bytes: same plus [version=0][flags=0]."""
     if len(name8) != 8:
         raise ValueError("name must be exactly 8 bytes")
-    return bytes([data_size & 0xFF, (data_size >> 8) & 0xFF, type_id]) + name8
+    base = bytes([data_size & 0xFF, (data_size >> 8) & 0xFF, type_id]) + name8
+    if proto == 82:
+        return base
+    return base + b'\x00\x00'
 
 
 def recv_var(timeout_ms=10000):
@@ -361,9 +366,10 @@ def req_var(type_id, name8, calc_machine=0x82, timeout_ms=5000):
     For TI-82 list L1: req_var(T_LIST, list_name_82(0))."""
     idle()
     pc_machine = pc_id_for(calc_machine)
+    proto = 82 if calc_machine == 0x82 else 83
     # The size field in a REQ header is "expected size"; calc fills in the real
     # one in its VAR reply. 0 is conventional for "I don't know yet".
-    hdr_data = make_var_header(0, type_id, name8)
+    hdr_data = make_var_header(0, type_id, name8, proto=proto)
     print("sending REQ for type=", hex(type_id), "name=", bytes(name8))
     if not send_packet(REQ, hdr_data, machine=pc_machine):
         print("REQ send failed"); return None
@@ -420,6 +426,120 @@ def go():
 def get_l1():
     """Convenience: request L1 from the calc (TI-82 protocol)."""
     return req_var(T_LIST, list_name_82(0))
+
+
+def encode_real(value):
+    """Encode a number into the 9-byte TI-82 real format.
+    Goes through string formatting to avoid float precision artifacts in the
+    BCD digits; '%.14e' gives 14 digits of precision plus exponent which is
+    exactly what the TI format wants."""
+    if value == 0:
+        return b'\x00\x80' + b'\x00' * 7
+    sign = 0x80 if value < 0 else 0x00
+    s = "{:.13e}".format(abs(value))   # 1 leading digit + 13 fractional + 'e+NN'
+    mant_str, exp_str = s.split("e")
+    exp = int(exp_str)
+    digits = mant_str.replace(".", "")  # 14 digits total, no leading zeros
+    if len(digits) < 14:
+        digits = digits + "0" * (14 - len(digits))
+    elif len(digits) > 14:
+        digits = digits[:14]
+    out = bytearray(9)
+    out[0] = sign
+    out[1] = (exp + 0x80) & 0xFF
+    for i in range(7):
+        hi = int(digits[2 * i])
+        lo = int(digits[2 * i + 1])
+        out[2 + i] = (hi << 4) | lo
+    return bytes(out)
+
+
+def encode_real_list(values):
+    """Encode a Python sequence of numbers into a TI-82 list payload."""
+    out = bytearray()
+    out.append(len(values) & 0xFF)
+    out.append((len(values) >> 8) & 0xFF)
+    for v in values:
+        out.extend(encode_real(v))
+    return bytes(out)
+
+
+def send_var(type_id, name8, data, calc_machine=0x82, timeout_ms=5000):
+    """PC-initiated send: deliver a variable to the calc.
+    type_id is e.g. T_LIST; name8 is the 8-byte name field; data is the
+    variable payload (count-prefixed for lists, raw real for reals, etc).
+    Returns True on success."""
+    idle()
+    pc_machine = pc_id_for(calc_machine)
+    proto = 82 if calc_machine == 0x82 else 83
+    var_hdr = make_var_header(len(data), type_id, name8, proto=proto)
+    print("sending RTS for type=", hex(type_id), "name=", bytes(name8), "len=", len(data))
+    if not send_packet(RTS, var_hdr, machine=pc_machine):
+        print("RTS send failed"); return False
+
+    p = recv_packet(timeout_ms)
+    if p is None: print("no ACK after RTS"); return False
+    _, cmd, _ = p
+    print("pkt: cmd=", hex(cmd))
+    if cmd != ACK:
+        print("expected ACK, got", hex(cmd)); return False
+
+    # Calc may take a moment after ACK to decide whether to send CTS or SKIP
+    # (it has to look up if the var name exists, check archive flags, etc).
+    # Use a longer timeout here than the per-packet default.
+    p = recv_packet(timeout_ms * 2)
+    if p is None:
+        print("no CTS within", timeout_ms * 2, "ms")
+        # If we got *some* bytes but not a full packet, dump line state.
+        print("idle now: lines=", read())
+        return False
+    _, cmd, body = p
+    print("pkt: cmd=", hex(cmd), "body_len=", len(body))
+    if cmd == SKIP:
+        print("calc rejected: SKIP/EXIT, body=", bytes(body))
+        send_packet(ACK, machine=pc_machine)
+        return False
+    if cmd != CTS:
+        print("expected CTS, got", hex(cmd)); return False
+
+    if not send_packet(ACK, machine=pc_machine):
+        print("ACK after CTS failed"); return False
+
+    # Give the calc a beat to switch from "I just sent ACK" to "now receiving DATA";
+    # without this, long DATA packets fail mid-stream with "Error in Xmit".
+    time.sleep_ms(20)
+
+    print("sending DATA")
+    if not send_packet(DATA, data, machine=pc_machine):
+        print("DATA send failed"); return False
+
+    p = recv_packet(timeout_ms)
+    if p is None: print("no ACK after DATA"); return False
+    _, cmd, _ = p
+    print("pkt: cmd=", hex(cmd))
+    if cmd != ACK:
+        print("expected ACK, got", hex(cmd)); return False
+
+    # TI-82 protocol ends here; 83/83+/84+ expect an EOT from us next.
+    if calc_machine != 0x82:
+        if not send_packet(EOT, machine=pc_machine):
+            print("EOT send failed"); return False
+    print("done")
+    return True
+
+
+def put_l1(values):
+    """Convenience: write a real-number list into L1 (TI-82 protocol)."""
+    return send_var(T_LIST, list_name_82(0), encode_real_list(values))
+
+
+def put_l1_83p(values):
+    """Same as put_l1 but using TI-83+/84+ native protocol (machine ID 0x73).
+    Use this if put_l1 fails with 'no ACK after RTS' -- the 84+ in TI-82
+    compat mode does not respond to PC-initiated RTS, but its native silent
+    protocol does."""
+    return send_var(T_LIST, list_name_82(0), encode_real_list(values),
+                    calc_machine=0x73)
 
 
 def first_bits(n=16, timeout_ms=10000):
