@@ -94,11 +94,17 @@ INMAX_BYTES = 16  # match CHAT.z80's INMAX so the calc can render it whole
 
 
 def _push_chatin(payload):
-    """Send `payload` to the calc as AppVar CHATIN. Truncates to INMAX_BYTES.
-    Returns True on success."""
-    body = payload[:INMAX_BYTES]
+    """PC-master push: deliver `payload` as AppVar CHATIN to the calc.
+    Truncates to INMAX_BYTES. Returns True on success.
+
+    The B1 plan: calc enters _GetKey after sending CHATMSG. _GetKey
+    blocks but lets OS interrupts run, including the silent-link RTS
+    handler. When this push lands, the OS writes CHATIN to NVRAM and
+    _GetKey returns with kClear (OS-takeover signal). The asm then
+    checks NVRAM for CHATIN and proceeds."""
+    body = bytes(payload)[:INMAX_BYTES]
     # Wire format for AppVar body: [size_le16][bytes].
-    framed = bytes([len(body) & 0xFF, (len(body) >> 8) & 0xFF]) + bytes(body)
+    framed = bytes([len(body) & 0xFF, (len(body) >> 8) & 0xFF]) + body
     print("bridge: -> calc CHATIN len=", len(body), "ascii=", repr(body))
     return transfer.send_var(APPVAR, CHATIN_NAME, framed,
                              calc_machine=0x73, quiet=True)
@@ -153,11 +159,12 @@ def run(name=None, expected_type=None):
             # listen_loop blocks until traffic or timeout; on send failure
             # on_var raises and we land in the except below, drop the
             # socket, reconnect.
-            transfer.listen_loop(name=name, expected_type=expected_type,
+            transfer.listen_loop(name=None, expected_type=None,
                                  on_var=on_var, timeout_ms=1000)
-            # Idle return: tick LED, drain inbound frames (each becomes a
-            # CHATIN AppVar push to the calc), then re-enter listen_loop
-            # with the same socket.
+            # Idle return: tick LED, drain inbound frames. Each frame
+            # is pushed to the calc as CHATIN immediately (PC-master).
+            # B1 architecture: calc is sitting in _GetKey waiting; OS
+            # link service handles our RTS as an interrupt-driven event.
             _tick_led()
             while True:
                 inbound = reader_holder[0].poll()
@@ -165,7 +172,7 @@ def run(name=None, expected_type=None):
                     break
                 _flash()
                 if not _push_chatin(inbound):
-                    print("bridge: CHATIN push failed (calc not idle?)")
+                    print("bridge: CHATIN push failed (calc not ready?)")
         except KeyboardInterrupt:
             print("bridge: interrupted")
             try:

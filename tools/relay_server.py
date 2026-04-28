@@ -3,9 +3,12 @@
 Listens on a TCP port, reads length-prefixed frames (4-byte big-endian
 length + payload) from connected clients and prints each frame.
 
-Reverse direction: lines typed on the controlling terminal's stdin are
-shipped framed to the most-recently-connected client (last-wins, since
-v0 is single-Pico).
+Reverse direction (two modes):
+  --echo  : every received frame is auto-replied with "echo: <text>".
+            This is the v0 stub for "ChatGPT on the calc": proves the
+            calc-as-master REQ/response architecture without an LLM
+            in the loop.
+  default : lines typed on stdin are shipped to the latest client.
 """
 
 import argparse
@@ -49,6 +52,9 @@ def _send_to_active(payload):
         print("[%s] send to client failed: %s" % (_now(), e), flush=True)
 
 
+_echo_mode = False
+
+
 class FramedHandler(socketserver.BaseRequestHandler):
     def handle(self):
         peer = "%s:%d" % self.client_address
@@ -71,8 +77,12 @@ class FramedHandler(socketserver.BaseRequestHandler):
                     text = body.decode("ascii")
                     pretty = repr(text)
                 except UnicodeDecodeError:
+                    text = None
                     pretty = body.hex()
                 print("[%s] %s len=%d %s" % (_now(), peer, length, pretty), flush=True)
+                if _echo_mode and text is not None:
+                    reply = ("echo: " + text).encode("ascii", errors="replace")
+                    _send_to_active(reply)
         finally:
             print("[%s] disconnected: %s" % (_now(), peer), flush=True)
             with _active_lock:
@@ -107,10 +117,18 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=9999)
+    ap.add_argument("--echo", action="store_true",
+                    help="auto-reply every received frame with 'echo: <text>' "
+                         "(v0 stub for ChatGPT-on-calc)")
     args = ap.parse_args(argv)
+    global _echo_mode
+    _echo_mode = args.echo
     with ReusingServer((args.host, args.port), FramedHandler) as srv:
         print("relay: listening on %s:%d" % (args.host, args.port), flush=True)
-        print("relay: type a line + ENTER to send to the latest connected client", flush=True)
+        if _echo_mode:
+            print("relay: ECHO MODE -- every frame auto-replied 'echo: <text>'", flush=True)
+        else:
+            print("relay: type a line + ENTER to send to the latest connected client", flush=True)
         t = threading.Thread(target=_stdin_pump, daemon=True)
         t.start()
         try:

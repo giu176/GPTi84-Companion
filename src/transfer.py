@@ -108,14 +108,89 @@ def _finish_recv_after_first_pkt(machine, cmd, hdr, timeout_ms=10000):
     return (bytes(hdr), bytes(data))
 
 
-def listen_loop(name=None, expected_type=None, on_var=None, timeout_ms=0):
+def _respond_to_req(machine, hdr, on_req):
+    """Pico-as-DBUS-slave response to a calc-initiated REQ.
+
+    REQ packet's body is the var header the calc wants. We invoke on_req
+    with (type_id, name8); it returns either bytes (the variable's wire
+    payload) or None ("variable doesn't exist"). On a hit we emit
+    ACK -> VAR -> wait for ACK -> wait for CTS -> ACK -> DATA -> wait for
+    final ACK. On a miss we emit SKIP/EXIT and bail.
+
+    Returns True on a clean exchange, False on any wire error."""
+    pc_machine = pc_id_for(machine)
+    if len(hdr) < 11:
+        print("respond: short REQ header"); return False
+    req_type = hdr[2]
+    req_name = bytes(hdr[3:11])
+    print("respond: REQ type=", hex(req_type), "name=", req_name)
+
+    payload = on_req(req_type, req_name)
+    if payload is None:
+        print("respond: no such var; SKIP/EXIT")
+        # Per packet.html, SKIP (0x36) is the "skip/exit" rejection.
+        send_packet(SKIP, machine=pc_machine)
+        return True
+
+    # Build VAR header echoing back the type/name with real size.
+    proto = 82 if machine == 0x82 else 83
+    var_hdr = make_var_header(len(payload), req_type, req_name, proto=proto)
+
+    if not send_packet(ACK, machine=pc_machine):
+        print("respond: ACK after REQ failed"); return False
+    time.sleep_ms(20)
+    if not send_packet(VAR, var_hdr, machine=pc_machine):
+        print("respond: VAR send failed"); return False
+
+    p = recv_packet(5000)
+    if p is None: print("respond: no ACK after VAR"); return False
+    _, cmd, _ = p
+    if cmd != ACK:
+        print("respond: expected ACK after VAR, got", hex(cmd)); return False
+
+    p = recv_packet(5000)
+    if p is None: print("respond: no CTS"); return False
+    _, cmd, _ = p
+    if cmd == SKIP:
+        print("respond: calc rejected with SKIP after VAR"); return True
+    if cmd != CTS:
+        print("respond: expected CTS, got", hex(cmd)); return False
+
+    if not send_packet(ACK, machine=pc_machine):
+        print("respond: ACK after CTS failed"); return False
+    time.sleep_ms(20)
+
+    if not send_packet(DATA, payload, machine=pc_machine):
+        print("respond: DATA send failed"); return False
+
+    p = recv_packet(5000)
+    if p is None: print("respond: no ACK after DATA"); return False
+    _, cmd, _ = p
+    if cmd != ACK:
+        print("respond: expected ACK after DATA, got", hex(cmd)); return False
+
+    # TI-82 protocol ends here; native 0x73 expects EOT from us.
+    if machine != 0x82:
+        if not send_packet(EOT, machine=pc_machine):
+            print("respond: EOT failed"); return False
+    print("respond: done")
+    return True
+
+
+def listen_loop(name=None, expected_type=None, on_var=None, on_req=None,
+                timeout_ms=0):
     """Sit on the wire and accept calc-initiated transfers in a loop.
 
-    For each accepted variable, calls on_var(type_id, name8, header, data) if
-    provided; otherwise prints a hex summary plus an ASCII decode. Filters by
-    `name` (8-byte field, or shorter str -- zero-padded) and `expected_type`
-    when set. Handles RDY (0x68) by ACKing so the calc believes a partner is
-    on the line; handles unexpected first-packet cmds by ACKing and looping.
+    For RTS/VAR (calc sending us a variable), calls on_var(type_id, name8,
+    header, data) if provided; otherwise prints a hex summary.
+
+    For REQ (calc requesting a variable from us), calls on_req(type_id,
+    name8) which must return either bytes (the wire-format payload, e.g.
+    [size_le16][bytes] for AppVars) or None to reject with SKIP/EXIT.
+
+    Filters by `name` (8-byte field, or shorter str -- zero-padded) and
+    `expected_type` when set; the filter applies to BOTH on_var and on_req.
+    Handles RDY (0x68) by ACKing.
 
     timeout_ms=0 means wait forever for the first packet; set nonzero to
     return after that long with no traffic."""
@@ -145,6 +220,23 @@ def listen_loop(name=None, expected_type=None, on_var=None, timeout_ms=0):
             # Calc is asking "are you there?" before sending. ACK keeps it talking.
             print("RDY from", hex(machine), "-> ACK")
             send_packet(ACK, machine=pc_machine)
+            continue
+
+        if cmd == REQ and on_req is not None:
+            print("incoming REQ: machine=", hex(machine), "hdr_len=", len(body))
+            # Apply name/type filter same as we do for RTS/VAR.
+            if len(body) >= 11:
+                got_type = body[2]
+                got_name = bytes(body[3:11])
+                if expected_type is not None and got_type != expected_type:
+                    print("listen: REQ type", hex(got_type), "!= expected; SKIP")
+                    send_packet(SKIP, machine=pc_machine)
+                    continue
+                if name8 is not None and got_name != name8:
+                    print("listen: REQ name", got_name, "!= expected; SKIP")
+                    send_packet(SKIP, machine=pc_machine)
+                    continue
+            _respond_to_req(machine, body, on_req)
             continue
 
         if cmd not in (RTS, VAR):

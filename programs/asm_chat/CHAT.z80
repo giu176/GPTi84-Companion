@@ -1,16 +1,16 @@
-; CHAT.z80: chat UI. Uses _GetCSC (NOT _GetKey) so the OS doesn't kick
-; us out when a silent-link transfer arrives mid-program. We own alpha
-; state ourselves: tap [ALPHA] to toggle alpha lock; an "A" indicator
-; shows on row 0 col 14 when alpha is engaged.
+; CHAT.z80: chat UI. Calc-as-master: on [ENTER] we _SendVarCmd CHATMSG
+; to ship the user's prompt, then immediately _ReceiveVar CHATIN to pull
+; the response back. Both directions are calc-initiated, so the OS link
+; service is invoked synchronously by our bcalls and we don't fight any
+; "background service" semantics. The Pico answers REQ for CHATIN out
+; of an outbox the desktop populated via the wifi relay.
 ;
-; [DEL] backspaces. [ENTER] sends the buffer as AppVar CHATMSG via
-; _SendVarCmd. [CLEAR] exits.
+; Uses _GetCSC (NOT _GetKey) so the OS doesn't kick us out when silent
+; link activity is happening on a different code path. We own alpha
+; state: tap [ALPHA] to toggle alpha lock; an "A" indicator shows at
+; row 0 col 14 when engaged.
 ;
-; Receive: every loop iteration polls for an AppVar named CHATIN. If
-; found, renders the (truncated) text on row 2 and deletes the var.
-; This works because we never call _GetKey, so the OS's silent-link
-; takeover path (which fires from inside _GetKey on the 84+) is
-; bypassed entirely.
+; [DEL] backspaces. [ENTER] sends + receives. [CLEAR] exits.
 ;
 ; Build:  just asm  programs/asm_chat/CHAT.z80
 ; Push:   just push-asm programs/asm_chat/CHAT.z80
@@ -41,17 +41,6 @@ INMAX   .equ    16              ; chars of incoming we render on row 2
         call    redraw_alpha
 
 input_loop:
-        ; Poll for inbound CHATIN every iteration. Cheap; _ChkFindSym
-        ; on a missing var is fast.
-        call    poll_chatin
-
-        ; ei + halt: yield to interrupts so the silent-link RTS handler
-        ; gets a chance to ACK incoming AppVar pushes from the Pico. A
-        ; spin loop on _GetCSC alone starves the OS link service and
-        ; the Pico's send_packet stalls at byte 0.
-        ei
-        halt
-
         bcall(_GetCSC)
         or      a
         jr      z, input_loop
@@ -103,10 +92,7 @@ _input_no_key_release:
 _input_wait_release:
         ; Wait until the key is released before accepting another, so
         ; one physical press = one character regardless of how long
-        ; it's held. ei + halt yields to interrupts so the silent-link
-        ; service can run if a Pico push lands while a key is held.
-        ei
-        halt
+        ; it's held.
         bcall(_GetCSC)
         or      a
         jr      nz, _input_wait_release
@@ -174,7 +160,10 @@ _enter_create:
         rst     rMOV9TOOP1
         bcall(_SendVarCmd)
         jr      c, _enter_err
-        jr      _enter_clear
+
+        ; Send succeeded. Now ask the Pico for the response.
+        call    await_response
+        jp      _enter_clear
 
 _enter_err:
         ; Mark failure with an "X" at row 0, col 15.
@@ -218,10 +207,71 @@ _ra_put:
         bcall(_PutC)
         ret
 
+; await_response: poll NVRAM for CHATIN while yielding to interrupts.
+; Avoids _GetKey entirely (which the OS uses as a takeover trigger on
+; link activity). Each iteration:
+;   1. _ChkFindSym for CHATIN -- exits loop on hit.
+;   2. ei + halt -- sleeps until next interrupt; link IRQ wakes us.
+;   3. _GetCSC for [CLEAR] -- non-blocking abort path that doesn't
+;      itself trigger OS takeover.
+; Cap iterations so a wedged link doesn't hang forever.
+AWAIT_TICKS .equ 2000              ; ~2000 * timer tick = several seconds
+
+await_response:
+        ld      hl, $0002
+        ld      (curRow), hl
+        bcall(_EraseEOL)
+        ld      hl, dots_msg
+        bcall(_PutS)
+
+        ld      bc, AWAIT_TICKS
+_aw_loop:
+        push    bc
+        ld      hl, op1_chatin_name
+        rst     rMOV9TOOP1
+        bcall(_ChkFindSym)         ; cf=0 if found, cf=1 if not
+        pop     bc
+        jr      nc, _aw_got
+
+        ; Yield. ei before halt is required: if interrupts were
+        ; disabled by the previous bcall path, halt would lock.
+        ei
+        halt
+
+        ; Non-blocking abort check. _GetCSC doesn't trigger the OS
+        ; takeover that _GetKey does.
+        bcall(_GetCSC)
+        cp      skClear
+        jp      z, _aw_user_abort
+
+        dec     bc
+        ld      a, b
+        or      c
+        jr      nz, _aw_loop
+
+        ; Timed out. Show marker.
+        ld      hl, $0002
+        ld      (curRow), hl
+        bcall(_EraseEOL)
+        ld      hl, timeout_msg
+        bcall(_PutS)
+        ret
+
+_aw_got:
+        call    poll_chatin
+        ret
+
+_aw_user_abort:
+        ld      hl, $0002
+        ld      (curRow), hl
+        bcall(_EraseEOL)
+        ld      hl, abort_msg
+        bcall(_PutS)
+        ret
+
 ; poll_chatin: look for an AppVar named CHATIN. If present, copy its
 ; text into inbuf (capped to INMAX, NUL-terminated), delete the var,
-; and redraw row 2. Preserves A across the call so it works as a
-; transparent insert after _GetKey.
+; and redraw row 2.
 poll_chatin:
         push    af
         push    bc
@@ -373,6 +423,9 @@ alpha_table:
         .db     0
 
 banner: .db     "asm_chat", 0
+dots_msg: .db   "...", 0
+abort_msg: .db  "[aborted]", 0
+timeout_msg: .db "[timeout]", 0
 op1_appvar_name:
         .db     AppVarObj, "CHATMSG", 0
 op1_chatin_name:

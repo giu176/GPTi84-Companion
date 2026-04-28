@@ -91,6 +91,11 @@ roundtrip FILE="programs/flappy_bird/FLAPPY.8xp":
 relay PORT="9999":
     {{PY}} tools/relay_server.py --port {{PORT}}
 
+# Run the relay in echo mode: every frame from the calc is auto-replied
+# with "echo: <text>". v0 stub for the ChatGPT-on-calc loop.
+relay-echo PORT="9999":
+    {{PY}} tools/relay_server.py --port {{PORT}} --echo
+
 # Disable Pico autoboot of the bridge (renames main.py -> main.py.off).
 # Use during dev when autoboot fights mpremote run / repl.
 autoboot-off:
