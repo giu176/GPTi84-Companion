@@ -1,16 +1,29 @@
-; CHAT.z80: chat UI. Calc-as-master: on [ENTER] we _SendVarCmd CHATMSG
-; to ship the user's prompt, then immediately _ReceiveVar CHATIN to pull
-; the response back. Both directions are calc-initiated, so the OS link
-; service is invoked synchronously by our bcalls and we don't fight any
-; "background service" semantics. The Pico answers REQ for CHATIN out
-; of an outbox the desktop populated via the wifi relay.
+; CHAT.z80: chat UI on the calc, two-step UX.
 ;
-; Uses _GetCSC (NOT _GetKey) so the OS doesn't kick us out when silent
-; link activity is happening on a different code path. We own alpha
-; state: tap [ALPHA] to toggle alpha lock; an "A" indicator shows at
-; row 0 col 14 when engaged.
+; Architecture (option A from this session's exploration):
+;   On entry: check NVRAM for AppVar CHATIN. If it exists, render it
+;     on row 2 as the previous reply, then delete.
+;   Input loop: type message, [DEL] to backspace, [ALPHA] to toggle
+;     alpha lock, [ENTER] to send, [CLEAR] to exit.
+;   On [ENTER]: build CHATMSG AppVar from the input buffer, send
+;     via _SendVarCmd, then exit cleanly back to the home screen.
+;   While the calc is at the home screen, the OS's idle silent-link
+;     receive code accepts the Pico's PC-master push of CHATIN into
+;     NVRAM. The user re-runs `Asm(prgmCHAT)` (one [ENTER] press at
+;     the home screen) to see the reply.
 ;
-; [DEL] backspaces. [ENTER] sends + receives. [CLEAR] exits.
+; Why two-step: every variant of "stay in asm and pull the reply"
+;   we tried wedges the calc:
+;     - calc-master REQ via _GetSmallPacket / _GetVariableData wedges
+;       the keypad matrix post-recv (only ON survives)
+;     - _GetCSC poll while waiting for OS push doesn't service the
+;       silent-link receive at all (Pico-side stalls at byte 0)
+;     - _GetKey path DOES service the receive, but the OS unwinds the
+;       asm before _GetKey returns to us
+;   What works on this hardware: PC-master push to a calc that is
+;   either at the home screen or in a clean asm-exit handoff back to
+;   the home screen. Silent-link receive completes, AppVar lands in
+;   NVRAM, keypad stays alive, user re-enters CHAT to see the reply.
 ;
 ; Build:  just asm  programs/asm_chat/CHAT.z80
 ; Push:   just push-asm programs/asm_chat/CHAT.z80
@@ -22,17 +35,19 @@
 .org    $9D93
 .db     t2ByteTok, tAsmCmp
 
-BUFMAX  .equ    64
-REQ_CMD .equ    $A2             ; DBUS REQ command byte
-CTS_CMD .equ    $09             ; DBUS CTS command byte
-APPVAR_TYPE .equ $15            ; DBUS variable type for AppVar
+BUFMAX  .equ    64              ; user-input ring (CHATMSG outbound)
 
+
+start:
         bcall(_ClrLCDFull)
         ld      hl, 0
         ld      (curRow), hl
         ld      hl, banner
         bcall(_PutS)
-        bcall(_NewLine)
+
+        ; Render any pending reply (CHATIN) on row 2, then delete so
+        ; the next round-trip starts clean.
+        call    render_chatin_if_present
 
         xor     a
         ld      (buflen), a
@@ -41,15 +56,15 @@ APPVAR_TYPE .equ $15            ; DBUS variable type for AppVar
         ld      hl, buf
         ld      (hl), 0
         call    redraw_alpha
+        call    redraw_line
 
 input_loop:
         bcall(_GetCSC)
         or      a
         jr      z, input_loop
 
-        ; Edge-detect: same scan code held across multiple polls
-        ; reports as that scan code repeatedly. Suppress repeats by
-        ; ignoring any code equal to last_sk; only act on transitions.
+        ; Edge-detect: hold-key reports the same scan code on every
+        ; poll. Suppress repeats by ignoring codes equal to last_sk.
         ld      b, a
         ld      a, (last_sk)
         cp      b
@@ -57,8 +72,6 @@ input_loop:
         ld      a, b
         ld      (last_sk), a
 
-        ; Dispatch. Order: control keys first, then alpha toggle,
-        ; then char-producing keys.
         cp      skClear
         jp      z, done
         cp      skEnter
@@ -68,7 +81,6 @@ input_loop:
         cp      skAlpha
         jr      z, on_alpha
 
-        ; Character-producing keys: resolve to ASCII (alpha-aware).
         call    sk_to_ascii
         or      a
         jr      z, _input_no_key_release
@@ -90,11 +102,7 @@ input_loop:
         jr      _input_wait_release
 
 _input_no_key_release:
-        ; Even unmapped keys need to debounce; fall through.
 _input_wait_release:
-        ; Wait until the key is released before accepting another, so
-        ; one physical press = one character regardless of how long
-        ; it's held.
         bcall(_GetCSC)
         or      a
         jr      nz, _input_wait_release
@@ -126,29 +134,25 @@ on_del:
 on_enter:
         ld      a, (buflen)
         or      a
-        jr      z, _enter_clear     ; empty line: just clear, no send
+        jp      z, _input_wait_release      ; empty line: no-op
 
-        ; Build OP1 = [AppVarObj, 'C','H','A','T','M','S','G', 0]
-        ld      hl, op1_appvar_name
+        ; If CHATMSG already exists from a prior session, delete so
+        ; _CreateAppVar gets a clean slot.
+        ld      hl, op1_chatmsg_name
         rst     rMOV9TOOP1
-
-        ; If CHATMSG already exists, delete so _CreateAppVar gets a clean
-        ; slot. _ChkFindSym: cf=0 if found, cf=1 if not.
         bcall(_ChkFindSym)
         jr      c, _enter_create
         bcall(_DelVarArc)
 
 _enter_create:
-        ; OP1 may have been clobbered by lookup/delete; reload.
-        ld      hl, op1_appvar_name
+        ld      hl, op1_chatmsg_name
         rst     rMOV9TOOP1
         ld      a, (buflen)
         ld      l, a
         ld      h, 0
-        bcall(_CreateAppVar)        ; HL=size; out: DE -> [size_lo,size_hi,data]
+        bcall(_CreateAppVar)            ; out: DE -> [size_lo,size_hi,data]
         jr      c, _enter_err
 
-        ; Copy (buf, buflen) into the var's data area, past the 2-byte size word.
         inc     de
         inc     de
         ld      hl, buf
@@ -157,48 +161,108 @@ _enter_create:
         ld      b, 0
         ldir
 
-        ; Reload OP1 (silent send may have clobbered it during lookup).
-        ld      hl, op1_appvar_name
+        ld      hl, op1_chatmsg_name
         rst     rMOV9TOOP1
-        bcall(_SendVarCmd)
+        bcall(_SendVarCmd)              ; calc-as-master push to Pico
         jr      c, _enter_err
 
-        ; Send succeeded. Now ask the Pico for the response.
-        call    await_response
-        jp      _enter_clear
+        ; Send succeeded. Exit cleanly to the home screen so the OS's
+        ; idle silent-link service can receive the Pico's CHATIN push.
+        ; User re-runs CHAT to see the reply (rendered on row 2 by
+        ; render_chatin_if_present at startup).
+        jp      done
 
 _enter_err:
-        ; Mark failure with an "X" at row 0, col 15.
-        ld      hl, $0F00            ; curRow=0 (L), curCol=15 (H)
+        ; Mark failure with an "X" at row 0, col 15. User can press
+        ; CLEAR to exit and try again.
+        ld      hl, $0F00
         ld      (curRow), hl
         ld      a, 'X'
         bcall(_PutC)
-
-_enter_clear:
-        xor     a
-        ld      (buflen), a
-        ld      hl, buf
-        ld      (hl), 0
-        call    redraw_line
         jp      _input_wait_release
 
 done:
         bcall(_ClrLCDFull)
         ret
 
-; Redraw the input line at row 7.
+; render_chatin_if_present: if AppVar CHATIN exists in NVRAM, render
+; up to 16 ASCII chars on row 2 col 0 and delete it. No-op otherwise.
+; Called once on entry. Does not loop.
+render_chatin_if_present:
+        ld      hl, op1_chatin_name
+        rst     rMOV9TOOP1
+        bcall(_ChkFindSym)
+        ret     c                        ; not found
+
+        ; DE -> [size_lo, size_hi, data...]. Read size_le16 into BC,
+        ; advance DE to the data bytes.
+        ld      a, (de)
+        ld      c, a
+        inc     de
+        ld      a, (de)
+        ld      b, a
+        inc     de
+
+        ; Cap at 16 chars (one screen row). >255 implies cap.
+        ld      a, b
+        or      a
+        jr      nz, _rci_cap
+        ld      a, c
+        cp      16
+        jr      c, _rci_have_n
+_rci_cap:
+        ld      a, 16
+_rci_have_n:
+        ; A = byte count (<=16). Copy from DE into inbuf so we own the
+        ; bytes before any bcall touches DE.
+        ld      hl, inbuf
+        ld      (inbuf_n), a
+        or      a
+        jr      z, _rci_done_copy
+        ld      c, a
+        ld      b, 0
+        ex      de, hl              ; HL = src (var data), DE = dst (inbuf)
+        ldir
+_rci_done_copy:
+        ld      hl, $0002
+        ld      (curRow), hl
+        bcall(_EraseEOL)
+
+        ; Print inbuf_n bytes from inbuf. DE/BC are free now: we own
+        ; the data and can survive _PutC trashing registers.
+        ld      a, (inbuf_n)
+        or      a
+        jr      z, _rci_delete
+        ld      b, a
+        ld      hl, inbuf
+_rci_loop:
+        ld      a, (hl)
+        push    hl
+        push    bc
+        bcall(_PutC)
+        pop     bc
+        pop     hl
+        inc     hl
+        djnz    _rci_loop
+
+_rci_delete:
+        ld      hl, op1_chatin_name
+        rst     rMOV9TOOP1
+        bcall(_DelVarArc)
+        ret
+
+; redraw_line: rewrite the input row at row 7 col 0 from buf.
 redraw_line:
-        ld      hl, $0007        ; curRow=7, curCol=0 (curRow=L, curCol=H)
+        ld      hl, $0007
         ld      (curRow), hl
         bcall(_EraseEOL)
         ld      hl, buf
         bcall(_PutS)
         ret
 
-; Draw the alpha-mode indicator at row 0 col 14: 'A' when alpha is on,
-; space when off.
+; redraw_alpha: 'A' at row 0 col 14 if alpha mode on, space otherwise.
 redraw_alpha:
-        ld      hl, $0E00        ; curCol=14 (H), curRow=0 (L)
+        ld      hl, $0E00
         ld      (curRow), hl
         ld      a, (alpha)
         or      a
@@ -209,101 +273,8 @@ _ra_put:
         bcall(_PutC)
         ret
 
-; await_response: calc-master REQ for AppVar CHATIN, render reply on
-; row 2. Pico's bridge populates the response from the desktop relay
-; (echo or LLM); on_req blocks Pico-side up to ~5s for a frame, so
-; relay-echo is effectively instant and a slow LLM gets a real wait.
-;
-; Bcall sequence is identical to programs/asm_reqtest/REQTEST.z80; see
-; project_calc_master_req_shipped.md for protocol details.
-;
-; Failure mode: if Pico's outbox stays empty past on_req's timeout it
-; replies SKIP (cmd 0x36) instead of ACK to our REQ. _SendRAMCmd then
-; ERR:LINKs and the OS overlay covers the screen. User dismisses with
-; ON and re-enters CHAT. Live with it; catching ERR:LINK from asm is
-; out of scope for v1.
-await_response:
-        ; Show "..." on row 2 immediately so the user has feedback while
-        ; on_req blocks on the Pico side. If the REQ succeeds we
-        ; overwrite this with the reply; on ERR:LINK the OS error
-        ; overlay covers everything anyway.
-        ld      hl, $0002
-        ld      (curRow), hl
-        bcall(_EraseEOL)
-        ld      hl, dots_msg
-        bcall(_PutS)
-
-        ; Step 0: SendRAMCmd recommends zeroing sndRecState to dodge
-        ; the documented edge case (varClass=0Ah, sndRecState=08h, large
-        ; DE). Cheap insurance.
-        xor     a
-        ld      (sndRecState), a
-
-        ; Step 1: send REQ for AppVar CHATIN.
-        ld      a, REQ_CMD
-        ld      hl, var_hdr_req
-        ld      de, 13
-        bcall(_SendRAMCmd)
-
-        ; Step 2: receive VAR header. _Get4Bytes consumes the preamble
-        ; into header @ 8674h; _GetSmallPacket reads the 13-byte body
-        ; into ioData @ 867Dh and ACKs.
-        bcall(_Get4Bytes)
-        bcall(_GetSmallPacket)
-
-        ; Step 3: send CTS (cmd 0x09) and wait for ACK.
-        ld      h, CTS_CMD
-        bcall(_Send4BytePacket)
-
-        ; Step 4: receive DATA. Same pattern as step 2: body lands in
-        ; ioData (overwriting the VAR header we already consumed).
-        bcall(_Get4Bytes)
-        bcall(_GetSmallPacket)
-
-        ; Stash size word for the render branch. _GetSmallPacket put
-        ; the body at ioData and the preamble's size word is at
-        ; header+2/+3.
-        ld      a, (header + 2)
-        ld      c, a
-        ld      a, (header + 3)
-        ld      b, a
-        push    bc
-
-        ; Step 5: consume trailing EOT.
-        bcall(_Get4Bytes)
-
-        ; Render reply on row 2. Body wire format is [size_le16][bytes];
-        ; NUL-terminate at ioData+recv_len, print starting at ioData+2.
-        ; recv_len < 3 means the AppVar had no payload past the size
-        ; prefix (shouldn't happen with our bridge, but be defensive).
-        pop     bc
-        ld      hl, $0002
-        ld      (curRow), hl
-        bcall(_EraseEOL)
-
-        ld      a, b
-        or      a
-        jr      nz, _aw_render_full      ; > 255 bytes, run with it
-        ld      a, c
-        cp      3
-        jr      nc, _aw_render_full
-
-        ld      hl, empty_msg
-        bcall(_PutS)
-        ret
-
-_aw_render_full:
-        ld      hl, ioData
-        add     hl, bc
-        ld      (hl), 0
-        ld      hl, ioData + 2
-        bcall(_PutS)
-        ret
-
-; sk_to_ascii: A in = scan code (sk*), A out = ASCII or 0 if unmapped.
-; If alpha is engaged, search the alpha table first (so e.g. skMath -> 'A'
-; instead of unmapped). If not in alpha or not in alpha table, fall
-; through to the always-on table (digits + arithmetic + punctuation).
+; sk_to_ascii: A in = scan code (sk*); A out = ASCII or 0 if unmapped.
+; In alpha mode searches alpha_table first; otherwise normal_table.
 sk_to_ascii:
         ld      c, a
         ld      a, (alpha)
@@ -312,19 +283,19 @@ sk_to_ascii:
         ld      hl, alpha_table
         call    _sk_lookup
         or      a
-        ret     nz                ; alpha hit
+        ret     nz
 _sk_normal:
         ld      a, c
         ld      hl, normal_table
         call    _sk_lookup
         ret
 
-; _sk_lookup: HL -> [sk, ascii] pairs terminated by a 0 sk byte.
-; C = scan code to find. Returns A = ASCII char or 0.
+; _sk_lookup: HL -> [sk, ascii] pairs, terminator = sk byte 0. C = sk
+; to find. Returns A = ASCII or 0.
 _sk_lookup:
         ld      a, (hl)
         or      a
-        ret     z                 ; end of table, A=0
+        ret     z
         cp      c
         jr      z, _skl_hit
         inc     hl
@@ -335,7 +306,6 @@ _skl_hit:
         ld      a, (hl)
         ret
 
-; Table: keys that produce a character regardless of alpha mode.
 normal_table:
         .db     sk0,      '0'
         .db     sk1,      '1'
@@ -357,10 +327,6 @@ normal_table:
         .db     skComma,  ','
         .db     0
 
-; Table: alpha-shifted keys -> letters/space. Layout matches the
-; "green ALPHA" labels above each key on the 84+ keypad. skApps (B)
-; is omitted; the include vendored here doesn't define it. sk0 is
-; mapped to space, the standard convention.
 alpha_table:
         .db     skMath,   'A'
         .db     skPrgm,   'C'
@@ -392,27 +358,19 @@ alpha_table:
         .db     skChs,    '?'
         .db     0
 
-banner: .db     "asm_chat", 0
-dots_msg: .db   "...", 0
-empty_msg: .db  "[no reply]", 0
-op1_appvar_name:
+banner:  .db    "asm_chat", 0
+
+op1_chatmsg_name:
         .db     AppVarObj, "CHATMSG", 0
+op1_chatin_name:
+        .db     AppVarObj, "CHATIN", 0, 0
 
-; REQ var header for AppVar CHATIN (84+ form, 13 bytes). The size
-; field is 0 in a REQ ("calc doesn't yet know what size to expect").
-; Note: _SendRAMCmd overwrites the leading machine ID byte with the
-; OS's current ID at REQ time; we still keep 0x73 here as a sane
-; default for any code path that may inspect the buffer.
-var_hdr_req:
-        .db     0, 0                     ; size_le16 (REQ: 0)
-        .db     APPVAR_TYPE              ; type
-        .db     "CHATIN", 0, 0           ; 8-byte name (zero-padded)
-        .db     0, 0                     ; version, flags
-
-buf:    .db     0
+buf:     .db    0
         .fill   BUFMAX, 0
-buflen: .db     0
-alpha:  .db     0                 ; nonzero = alpha mode engaged
-last_sk: .db    0                 ; last scan code seen, for edge-detect
+buflen:  .db    0
+alpha:   .db    0
+last_sk: .db    0
+inbuf_n: .db    0
+inbuf:   .fill   16, 0
 
 .end

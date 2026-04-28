@@ -116,6 +116,19 @@ chat-bridge NAME="" TYPE="":
     @echo "==> running on Pico (Ctrl-C to stop)"
     {{MPR}} run /tmp/ti84_e2e_bridge.py
 
+# One-shot PC-master push of AppVar CHATIN to the calc with the given
+# ASCII payload. Pair with programs/asm_pushtest/PUSHTEST.z80 (or any
+# calc-side program polling for CHATIN via _ChkFindSym): the calc
+# should render "got: PAYLOAD" on row 4 once the OS silent-link
+# receive completes. Used to test the Option-A architecture (calc
+# polls, PC pushes) vs the calc-master REQ path.
+# Example: just pushvar "hello"
+pushvar PAYLOAD="hello":
+    @echo "==> generating pushvar script (payload={{PAYLOAD}})"
+    {{PY}} tools/build_e2e.py pushvar "{{PAYLOAD}}" > /tmp/ti84_e2e_pushvar.py
+    @echo "==> running on Pico"
+    {{MPR}} run /tmp/ti84_e2e_pushvar.py
+
 # Wire-only test for calc-master REQ. Runs listen_loop on the Pico with
 # a hardcoded on_req that always serves PAYLOAD as AppVar CHATIN. Pair
 # with `Asm(prgmREQTEST)` on the calc; expect the PAYLOAD text to appear

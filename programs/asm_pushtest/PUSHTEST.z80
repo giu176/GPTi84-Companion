@@ -1,0 +1,163 @@
+; PUSHTEST.z80 v2: test PC-master push received via _GetKey.
+;
+; The dead-ends memory (project_calc_to_pico_recv_dead_ends.md) found
+; that _GetKey DOES service silent-link receive (CHATIN lands in
+; NVRAM, Pico-side handshake completes), but the OS yanks us out of
+; asm afterwards by unwinding the stack. v1 (this session) confirmed
+; _GetCSC poll does NOT service the receive (Pico stalls at byte 0).
+;
+; v2 question: when _GetKey-triggered receive happens, what actually
+; happens to us next?
+;   (a) OS unwinds asm cleanly back to home screen, calc usable,
+;       CHATIN sitting in NVRAM. (Two-step UX: rerun program to
+;       render.)
+;   (b) OS unwinds asm but keypad is wedged afterwards (matrix dead
+;       like the calc-master REQ wedge). Then nothing about silent-
+;       link receive on this hardware works without bit-banging.
+;   (c) _GetKey returns normally to us, code after _GetKey runs, we
+;       can _ChkFindSym + render + loop. (Best case: we wire this
+;       into CHAT's await_response.)
+;
+; Test sequence:
+;   1. just push-asm programs/asm_pushtest/PUSHTEST.z80
+;   2. on calc: Asm(prgmPUSHTEST). Screen shows banner + "WAITING".
+;   3. desktop: just pushvar "hello"
+;   4. observe what happens on calc:
+;        (c) "BACK kc=XX" appears on row 3 + "got: hello" on row 4
+;            -> _GetKey returned, we keep running. Press [CLEAR] to
+;            exit, confirm keypad still works on home screen.
+;        (a) screen reverts to home screen mid-test, [VARS]->APPS->
+;            shows CHATIN exists, all keys work normally afterwards.
+;            -> classic "OS unwind" behavior, two-step UX is viable.
+;        (b) screen reverts to home screen, ON works, no other key
+;            does. -> bit-bang is the only path.
+;
+; [CLEAR] inside the program (kClear=09h in _GetKey codes per
+; ti83plus.inc) exits cleanly without invoking any link receive.
+
+.nolist
+#include "ti83plus.inc"
+.list
+
+.org    $9D93
+.db     t2ByteTok, tAsmCmp
+
+start:
+        bcall(_ClrLCDFull)
+        ld      hl, 0
+        ld      (curRow), hl
+        ld      hl, banner
+        bcall(_PutS)
+
+        ld      hl, $0002
+        ld      (curRow), hl
+        ld      hl, waiting_msg
+        bcall(_PutS)
+
+main_loop:
+        ; Block on _GetKey. Per dead-ends memory, this is what
+        ; actually services silent-link receive : the OS's keypad
+        ; scan loop apparently includes a link-line-state check that
+        ; triggers the receive code path. Returns A = key code (kKey*
+        ; not skKey*); kClear = 09h.
+        bcall(_GetKey)
+
+        ; If we get here, _GetKey returned to us : this rules out
+        ; case (a)/(b) in the comment above. Render the keycode on
+        ; row 3 immediately so even if subsequent code fails we know
+        ; we made it back.
+        push    af
+        ld      hl, $0003
+        ld      (curRow), hl
+        ld      hl, back_msg
+        bcall(_PutS)
+        pop     af
+        push    af
+        call    putA_hex
+        pop     af
+
+        ; If the key was kClear (09h), exit.
+        cp      $09
+        jr      z, done
+
+        ; Look for CHATIN. If it's there, the silent-link receive
+        ; ran successfully: render and delete.
+        ld      hl, op1_chatin
+        rst     rMOV9TOOP1
+        bcall(_ChkFindSym)
+        jr      c, main_loop                ; not found, back to wait
+        call    render_chatin
+        ld      hl, op1_chatin
+        rst     rMOV9TOOP1
+        bcall(_DelVarArc)
+        jr      main_loop
+
+done:
+        bcall(_ClrLCDFull)
+        ret
+
+; render_chatin: assumes _ChkFindSym just succeeded so DE points
+; to [size_lo, size_hi, data...]. Render up to 11 ASCII chars at
+; row 4 col 5 (after "got: " prefix).
+render_chatin:
+        ld      hl, $0004
+        ld      (curRow), hl
+        ld      hl, got_msg
+        bcall(_PutS)
+
+        ld      a, (de)
+        ld      c, a
+        inc     de
+        ld      a, (de)
+        ld      b, a
+        inc     de
+        ; cap at 11 chars
+        ld      a, b
+        or      a
+        jr      nz, _rc_cap
+        ld      a, c
+        cp      11
+        jr      c, _rc_loop
+_rc_cap:
+        ld      bc, 11
+_rc_loop:
+        ld      a, b
+        or      c
+        ret     z
+        ld      a, (de)
+        bcall(_PutC)
+        inc     de
+        dec     bc
+        jr      _rc_loop
+
+; putA_hex: print A as two hex chars at (curRow). _PutC advances.
+putA_hex:
+        push    af
+        rrca
+        rrca
+        rrca
+        rrca
+        and     $0F
+        call    _phn_nyb
+        pop     af
+        and     $0F
+_phn_nyb:
+        cp      10
+        jr      c, _phn_dig
+        add     a, 'A' - 10
+        jr      _phn_emit
+_phn_dig:
+        add     a, '0'
+_phn_emit:
+        bcall(_PutC)
+        ret
+
+banner:      .db "PUSHTEST v2", 0
+waiting_msg: .db "WAITING (GetKey)", 0
+back_msg:    .db "BACK kc=", 0
+got_msg:     .db "got:", 0
+
+op1_chatin:
+        .db AppVarObj, "CHATIN", 0, 0
+
+.end

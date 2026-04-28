@@ -7,16 +7,17 @@
 ;   1. _SendRAMCmd      (4ED3) A=0xA2 (REQ), HL=var_hdr, DE=13
 ;                              : sends REQ + 13-byte var-header body, waits ACK
 ;   2a. _Get4Bytes      (4EF4) : consumes 4-byte VAR preamble into header,
-;                                no ACK. (_GetDataPacket rejected our VAR
-;                                preamble silently in v1; switching to the
-;                                explicit two-step that matches what the
-;                                wiki page actually says.)
+;                                no ACK.
 ;   2b. _GetSmallPacket (4EEB) : reads 13-byte VAR body into ioData, using
 ;                                the size word that _Get4Bytes left at
 ;                                header+2. ACKs on good checksum.
 ;   3.  _Send4BytePacket (4EDC) H=0x09 (CTS) : sends CTS, waits ACK
-;   4.  _GetDataPacket  (4EEE) DE=data_buf, BC=N
-;                              : N from var hdr's size_le16 (ioData+0/+1)
+;   4a. _Get4Bytes      (4EF4) : consumes DATA preamble into header.
+;   4b. _GetVariableData (5092) : reads (header+2) body bytes into the
+;                                buffer pointed at by (iMathPtr5). ACKs on
+;                                good checksum. Used here instead of
+;                                _GetSmallPacket so payloads can grow past
+;                                14 bytes (small-packet hard cap).
 ;   5.  _Get4Bytes      (4EF4) : consumes the trailing EOT (cmd 0x92), no ACK
 ;
 ; Packet command bytes (per src/packet.py + wikiti):
@@ -129,12 +130,13 @@ _step2_ok:
         ld      a, '3'
         bcall(_PutC)
 
-        ; --- Step 4: receive DATA reply. Same pattern as step 2 since
-        ; _GetDataPacket rejected our VAR preamble; assume same issue
-        ; for DATA. _Get4Bytes consumes preamble, _GetSmallPacket reads
-        ; up to 14 body bytes into ioData and ACKs. We rely on the
-        ; payload being small (<=14 bytes) for v1; longer payloads will
-        ; need a different receive primitive.
+        ; --- Step 4: receive DATA reply. _Get4Bytes consumes preamble
+        ; into header (size word lands at header+2/+3). Then point
+        ; iMathPtr5 at our local buffer, zero arcInfo (RAM dest, no
+        ; flash page), and call _GetVariableData which reads
+        ; (header+2) bytes into that buffer and ACKs. Cap buffer at
+        ; RECV_BUF_SIZE so we don't trash adjacent OS RAM if the
+        ; payload is larger than expected.
         ld      hl, $0400
         ld      (curRow), hl
         ld      hl, msg_step4
@@ -150,15 +152,23 @@ _step2_ok:
         ld      a, 'a'
         bcall(_PutC)
 
-        bcall(_GetSmallPacket)           ; body -> ioData; ACKs
-
-        ; Stash the body size that was just received. The size word
-        ; comes from header+2/+3 (where _Get4Bytes wrote the preamble).
+        ; Stash the body size from the preamble for later render.
         ld      a, (header + 2)
         ld      c, a
         ld      a, (header + 3)
         ld      b, a
         ld      (recv_len), bc
+
+        ; Set up _GetVariableData inputs.
+        ;   (iMathPtr5) = buffer address
+        ;   (arcInfo)   = 0 (RAM, no flash page)
+        ;   (header+2)  = already set by _Get4Bytes above
+        ld      hl, recv_buf
+        ld      (iMathPtr5), hl
+        xor     a
+        ld      (arcInfo), a
+
+        bcall(_GetVariableData)          ; body -> recv_buf; ACKs
 
         ld      hl, $0F04
         ld      (curRow), hl
@@ -181,11 +191,11 @@ _step2_ok:
         bcall(_PutC)
 
         ; --- Render received data on row 6 ----------------------------
-        ; DATA body now lives at ioData (written by _GetSmallPacket).
+        ; DATA body now lives at recv_buf (written by _GetVariableData).
         ; Wire format for AppVars is [size_le16][bytes]. recv_len is the
-        ; total bytes _GetSmallPacket wrote (including the 2-byte size
-        ; prefix). For ASCII render: NUL at ioData+recv_len, print
-        ; starting at ioData+2. If recv_len < 3, print "[empty]".
+        ; total bytes received (including the 2-byte size prefix). For
+        ; ASCII render: NUL at recv_buf+recv_len, print starting at
+        ; recv_buf+2. If recv_len < 3, print "[empty]".
         ld      hl, $0006
         ld      (curRow), hl
 
@@ -201,13 +211,13 @@ _step2_ok:
         jr      _render_done
 
 _render_full:
-        ; NUL-terminate at ioData + recv_len. ioData is at 867Dh; up to
-        ; 14 bytes of body fit (_GetSmallPacket caps at that). 16-byte
-        ; ioData scratch + ioNewData at 8689h gives us breathing room.
-        ld      hl, ioData
+        ; NUL-terminate at recv_buf + recv_len. recv_buf is sized
+        ; RECV_BUF_SIZE so a NUL at the end fits even if the payload
+        ; filled the buffer.
+        ld      hl, recv_buf
         add     hl, bc
         ld      (hl), 0
-        ld      hl, ioData + 2
+        ld      hl, recv_buf + 2
         bcall(_PutS)
 
 _render_done:
@@ -223,7 +233,7 @@ banner:    .db "REQTEST CHATIN", 0
 msg_step1: .db "1 SendRAMCmd REQ", 0
 msg_step2: .db "2 Get4B+SmallPkt V", 0
 msg_step3: .db "3 Send4Byte CTS", 0
-msg_step4: .db "4 Get4B+SmallPkt D", 0
+msg_step4: .db "4 Get4B+VarData D", 0
 msg_step5: .db "5 Get4Bytes EOT", 0
 msg_empty: .db "[empty]", 0
 
@@ -236,12 +246,19 @@ var_hdr_req:
         .db     "CHATIN", 0, 0           ; 8-byte name
         .db     0, 0                     ; version, flags
 
-; (Both the VAR header and the DATA body land in ioData at 867Dh,
-; courtesy of _GetSmallPacket; we don't need a local buffer. The VAR
-; header is overwritten when DATA arrives, but we already extracted
-; everything we needed from the VAR.)
+; The VAR header (step 2) lands in ioData at 867Dh, courtesy of
+; _GetSmallPacket. We extract everything we need from it before step 4
+; runs, so it's fine that DATA goes elsewhere.
 
-; Actual count of body bytes _GetSmallPacket placed into ioData on
+; Buffer for the DATA payload. Sized for AppVar bodies up to
+; RECV_BUF_SIZE - 1 bytes (one byte reserved for a trailing NUL during
+; render). Lives in the program body which is loaded into RAM by
+; Asm(prgmREQTEST), so it's writable.
+RECV_BUF_SIZE   .equ    66
+recv_buf:
+        .fill   RECV_BUF_SIZE, 0
+
+; Actual count of body bytes _GetVariableData placed into recv_buf on
 ; the DATA receive (used for render).
 recv_len:
         .dw     0

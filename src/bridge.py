@@ -14,18 +14,22 @@ States (onboard LED on machine.Pin("LED")):
 Blink is cooperative: ticked between DBUS packets. A long DBUS transfer
 freezes the LED, which is informative -- the thing is busy on the wire.
 
-Direction model (post-2026-04-28):
+Direction model (post-2026-04-29):
   calc -> Pico   : on_var callback in listen_loop ships the AppVar body
-                   over TCP (unchanged from the original v0).
-  Pico -> calc   : 1-slot outbox holds the latest desktop-sourced frame.
-                   When the calc issues a DBUS REQ for CHATIN, on_req
-                   pops the outbox and serves it as the AppVar body.
-                   If the outbox is empty, on_req returns None and the
-                   Pico replies with SKIP (calc-side renders no-reply).
+                   over TCP.
+  Pico -> calc   : when a desktop frame arrives, Pico immediately runs
+                   transfer.send_var(APPVAR, b"CHATIN", body, 0x73). The
+                   calc must be at the home screen (or equivalently in
+                   a clean asm-exit handoff back to the home screen) for
+                   the OS's idle silent-link service to receive it. The
+                   AppVar lands in NVRAM; user re-runs CHAT to see the
+                   reply.
 
-The PC-master push path that lived here pre-shipping (`_push_chatin`
-via `transfer.send_var`) is gone. Calc-master REQ is the only inbound
-direction now -- see project_calc_master_req_shipped.md.
+Why PC-master push and not calc-master REQ: every variant of calc-as-
+master receive we tried (_GetSmallPacket, _GetVariableData inside the
+asm program) wedges the calc's keypad matrix post-recv. PC-master push
+to a calc at the home screen completes cleanly with the keypad alive
+afterwards. Two-step UX (re-run CHAT after each reply) is the price.
 """
 
 import time
@@ -103,49 +107,43 @@ def _wifi_with_retry():
 
 CHATIN_NAME = b"CHATIN\x00\x00"
 APPVAR = 0x15
-INMAX_BYTES = 12   # _GetSmallPacket caps the calc-side recv at 14 bytes
-                   # of body INCLUDING the 2-byte size prefix, so the
-                   # ASCII payload limit is 12. Truncate before stashing
-                   # so we don't lie to the calc about size.
 
-ON_REQ_TIMEOUT_MS = 5000   # how long on_req blocks waiting for a frame
-                           # to land in the outbox before giving up and
-                           # SKIPping the calc's REQ. Sized for the
-                           # eventual LLM round-trip; relay-echo answers
-                           # in under a millisecond so this only kicks in
-                           # for slow upstreams or genuine no-reply.
+# 84+ silent receive accepts AppVars far larger than our ASCII chat
+# bodies; cap conservatively so we don't flood the home screen render
+# with multi-row payloads.
+INMAX_BYTES = 64
 
 
 def _frame_to_appvar_payload(frame):
     """Convert a desktop-supplied frame into the wire-format AppVar body
-    the calc expects: [size_le16][bytes]. Truncates to INMAX_BYTES so the
-    calc-side _GetSmallPacket doesn't ERR:LINK on oversize. Returns the
-    bytes ready to pass to transfer._respond_to_req."""
+    the calc expects: [size_le16][bytes]. Truncates to INMAX_BYTES."""
     body = bytes(frame)[:INMAX_BYTES]
     return bytes([len(body) & 0xFF, (len(body) >> 8) & 0xFF]) + body
 
 
-def _make_callbacks(sock_holder, reader_holder, outbox):
-    """Build (on_var, on_req) pair sharing closures over the sock holder,
-    the FrameReader, and the 1-slot outbox.
+def _push_chatin(frame):
+    """PC-master push of an inbound desktop frame to the calc as
+    AppVar CHATIN. Calls transfer.send_var with the 84+ native machine
+    ID. Returns True on success, False on any failure (logged)."""
+    wire = _frame_to_appvar_payload(frame)
+    print("bridge: pushing CHATIN to calc (", len(wire), "wire bytes,",
+          len(frame), "raw,", repr(frame[:INMAX_BYTES]), ")")
+    try:
+        ok = transfer.send_var(APPVAR, CHATIN_NAME, wire,
+                               calc_machine=0x73, quiet=True)
+    except Exception as e:
+        print("bridge: send_var raised:", e)
+        return False
+    if not ok:
+        print("bridge: send_var returned False (calc not at home screen?)")
+    return ok
 
-    on_var (calc -> desktop): strip the AppVar size prefix from the
-    inbound body and ship it as a TCP frame. If the socket is down we
-    drop the frame (calc-side already got the silent-link confirmation
-    so its UX won't hang).
 
-    on_req (calc -> Pico, Pico replies): if the outbox already has a
-    frame, pop it and serve immediately. Otherwise pump the FrameReader
-    for up to ON_REQ_TIMEOUT_MS waiting for a frame to land. This turns
-    "outbox empty at REQ time" into "delayed reply" so the calc gets a
-    real response from a slow desktop instead of an unrecoverable
-    ERR:LINK from the Pico SKIPping. Returns None on genuine timeout
-    (Pico SKIPs)."""
+def _make_on_var(sock_holder):
+    """Build an on_var callback that ships calc-initiated AppVar bodies
+    over the socket. Drops the AppVar size prefix."""
 
     def on_var(type_id, name8, hdr, data):
-        # AppVar (0x15) and Program (0x05/0x06) bodies are
-        # [size_le16][bytes]; strip the prefix so the relay sees the
-        # caller payload.
         payload = data
         if type_id in (0x05, 0x06, 0x15) and len(data) >= 2:
             declared = data[0] | (data[1] << 8)
@@ -169,78 +167,22 @@ def _make_callbacks(sock_holder, reader_holder, outbox):
             sock_holder[0] = None
             raise
 
-    def on_req(type_id, name8):
-        stripped = bytes(name8).rstrip(b"\x00")
-        print("bridge: on_req type=", hex(type_id), "name=", stripped)
-        if type_id != APPVAR or bytes(name8) != CHATIN_NAME:
-            print("  -> not CHATIN, returning None (Pico will SKIP)")
-            return None
-
-        # Block up to ON_REQ_TIMEOUT_MS for a frame to be available.
-        # We're inside _respond_to_req, which has already received the
-        # calc's REQ but not yet sent ACK or SKIP. The calc's
-        # _SendRAMCmd is sitting waiting for the reply, so a few-second
-        # delay here is fine: the calc's silent-link timeouts are
-        # generous. Pump the FrameReader on each iteration so a frame
-        # arriving mid-wait gets picked up immediately.
-        deadline = time.ticks_add(time.ticks_ms(), ON_REQ_TIMEOUT_MS)
-        first_wait_logged = False
-        while True:
-            if outbox[0] is not None:
-                break
-            if reader_holder[0] is not None:
-                try:
-                    inbound = reader_holder[0].poll()
-                    if inbound is not None:
-                        _flash()
-                        outbox[0] = inbound
-                        print("  -> outbox <-", len(inbound), "bytes (in-wait):",
-                              repr(inbound[:32]))
-                        break
-                except OSError as e:
-                    print("  -> FrameReader OSError during on_req wait:", e)
-                    # Fall through to timeout; supervisor loop will
-                    # rebuild the socket on next iteration.
-                    return None
-            if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
-                print("  -> on_req timeout after",
-                      ON_REQ_TIMEOUT_MS, "ms; Pico will SKIP")
-                return None
-            if not first_wait_logged:
-                print("  -> outbox empty, blocking up to",
-                      ON_REQ_TIMEOUT_MS, "ms for a frame")
-                first_wait_logged = True
-            time.sleep_ms(20)
-
-        frame = outbox[0]
-        outbox[0] = None
-        wire = _frame_to_appvar_payload(frame)
-        print("  -> serving", len(wire), "wire bytes (",
-              len(frame), "raw,", repr(frame[:INMAX_BYTES]), ")")
-        _flash()
-        return wire
-
-    return on_var, on_req
+    return on_var
 
 
 def run(name=None, expected_type=None):
     """Top-level supervisor. Returns only on KeyboardInterrupt.
 
-    `name` and `expected_type` are accepted for backwards compat with the
-    pre-shipping signature but are no longer used as listen_loop filters
-    -- the on_var path always relays whatever the calc sends, and on_req
-    only matches AppVar CHATIN. They remain in the signature so existing
-    Justfile recipes (`just chat-bridge ...`) keep working without edit.
+    `name` and `expected_type` are accepted for backwards compat with
+    the pre-shipping signature but are not used as listen_loop filters
+    -- the on_var path always relays whatever the calc sends.
     """
-    print("bridge: run() starting -- calc-master REQ era")
-    if name is not None or expected_type is not None:
-        print("bridge: note: name/expected_type args are now informational")
+    print("bridge: run() starting -- PC-master push (option A)")
     _wifi_with_retry()
 
     sock_holder = [None]
     reader_holder = [None]
-    outbox = [None]
-    on_var, on_req = _make_callbacks(sock_holder, reader_holder, outbox)
+    on_var = _make_on_var(sock_holder)
 
     while True:
         try:
@@ -250,24 +192,21 @@ def run(name=None, expected_type=None):
                 reader_holder[0] = net.FrameReader(sock_holder[0])
                 _set_state(ST_SOCKET_UP)
                 print("bridge: listen_loop running")
-            # listen_loop blocks until traffic or timeout. Short timeout
-            # so we get back to the FrameReader poll regularly.
-            transfer.listen_loop(on_var=on_var, on_req=on_req,
-                                 timeout_ms=500)
-            # Idle return: tick LED, drain inbound frames into the outbox.
-            # Latest-frame-wins -- if the desktop pushes faster than the
-            # calc REQs, only the most recent reply is kept.
+            # Service calc-initiated traffic. Short timeout so we get
+            # back to the inbound-frame poll regularly.
+            transfer.listen_loop(on_var=on_var, timeout_ms=500)
             _tick_led()
+            # Drain any inbound desktop frames and push each to the
+            # calc as CHATIN. send_var blocks on the wire while the
+            # handshake completes; it's fine to do this synchronously
+            # because calc-side traffic is paused (we just returned
+            # from listen_loop with no calc activity).
             while True:
                 inbound = reader_holder[0].poll()
                 if inbound is None:
                     break
                 _flash()
-                if outbox[0] is not None:
-                    print("bridge: outbox replaced (calc didn't REQ in time)")
-                outbox[0] = inbound
-                print("bridge: outbox <- ", len(inbound), "bytes:",
-                      repr(inbound[:32]))
+                _push_chatin(inbound)
         except KeyboardInterrupt:
             print("bridge: interrupted")
             try:
@@ -278,7 +217,6 @@ def run(name=None, expected_type=None):
             LED.off()
             return
         except OSError as e:
-            # Socket died mid-relay or wifi flapped. Drop and rebuild.
             print("bridge: OSError in supervisor:", e)
             try:
                 if sock_holder[0]:
@@ -287,7 +225,6 @@ def run(name=None, expected_type=None):
                 pass
             sock_holder[0] = None
             reader_holder[0] = None
-            # If wifi itself dropped, re-associate before retrying socket.
             import network
             if not network.WLAN(network.STA_IF).isconnected():
                 _wifi_with_retry()
