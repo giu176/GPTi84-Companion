@@ -1,29 +1,23 @@
-; CHAT.z80: chat UI on the calc, two-step UX.
+; CHAT.z80: ship Str1 to the Pico/desktop and exit. Reply lands in Str2.
 ;
-; Architecture (option A from this session's exploration):
-;   On entry: check NVRAM for AppVar CHATIN. If it exists, render it
-;     on row 2 as the previous reply, then delete.
-;   Input loop: type message, [DEL] to backspace, [ALPHA] to toggle
-;     alpha lock, [ENTER] to send, [CLEAR] to exit.
-;   On [ENTER]: build CHATMSG AppVar from the input buffer, send
-;     via _SendVarCmd, then exit cleanly back to the home screen.
-;   While the calc is at the home screen, the OS's idle silent-link
-;     receive code accepts the Pico's PC-master push of CHATIN into
-;     NVRAM. The user re-runs `Asm(prgmCHAT)` (one [ENTER] press at
-;     the home screen) to see the reply.
+; Architecture (post-2026-04-28 pivot to native String vars):
+;   At the home screen, user prepares input with `"text"->Str1` (or any
+;   expression -- numbers, math notation, all stored as a token stream
+;   inside the String var). User runs `Asm(prgmCHAT)`. We look up Str1
+;   in NVRAM, ship it via _SendVarCmd, and exit.
 ;
-; Why two-step: every variant of "stay in asm and pull the reply"
-;   we tried wedges the calc:
-;     - calc-master REQ via _GetSmallPacket / _GetVariableData wedges
-;       the keypad matrix post-recv (only ON survives)
-;     - _GetCSC poll while waiting for OS push doesn't service the
-;       silent-link receive at all (Pico-side stalls at byte 0)
-;     - _GetKey path DOES service the receive, but the OS unwinds the
-;       asm before _GetKey returns to us
-;   What works on this hardware: PC-master push to a calc that is
-;   either at the home screen or in a clean asm-exit handoff back to
-;   the home screen. Silent-link receive completes, AppVar lands in
-;   NVRAM, keypad stays alive, user re-enters CHAT to see the reply.
+;   The Pico relays the token stream to the desktop, which translates
+;   tokens to ASCII, processes the message, translates the reply back
+;   to tokens, and PC-master pushes it to the calc as Str2. Calc must
+;   be at the home screen for the OS's idle silent-link receive to
+;   accept it; we exit cleanly so that condition is satisfied.
+;
+;   User invokes `Str2 ENTER` at the home screen to see the reply.
+;
+; Why no on-calc UI: the calc already has a string editor. Building
+;   another one in asm was 200 lines of mistakes. Calc-native input is
+;   also structured (token stream), enabling a future math-notation
+;   pipeline desktop-side.
 ;
 ; Build:  just asm  programs/asm_chat/CHAT.z80
 ; Push:   just push-asm programs/asm_chat/CHAT.z80
@@ -35,342 +29,22 @@
 .org    $9D93
 .db     t2ByteTok, tAsmCmp
 
-BUFMAX  .equ    64              ; user-input ring (CHATMSG outbound)
-
 
 start:
-        bcall(_ClrLCDFull)
-        ld      hl, 0
-        ld      (curRow), hl
-        ld      hl, banner
-        bcall(_PutS)
-
-        ; Render any pending reply (CHATIN) on row 2, then delete so
-        ; the next round-trip starts clean.
-        call    render_chatin_if_present
-
-        xor     a
-        ld      (buflen), a
-        ld      (alpha), a
-        ld      (last_sk), a
-        ld      hl, buf
-        ld      (hl), 0
-        call    redraw_alpha
-        call    redraw_line
-
-input_loop:
-        bcall(_GetCSC)
-        or      a
-        jr      z, input_loop
-
-        ; Edge-detect: hold-key reports the same scan code on every
-        ; poll. Suppress repeats by ignoring codes equal to last_sk.
-        ld      b, a
-        ld      a, (last_sk)
-        cp      b
-        jr      z, input_loop
-        ld      a, b
-        ld      (last_sk), a
-
-        cp      skClear
-        jp      z, done
-        cp      skEnter
-        jp      z, on_enter
-        cp      skDel
-        jp      z, on_del
-        cp      skAlpha
-        jr      z, on_alpha
-
-        call    sk_to_ascii
-        or      a
-        jr      z, _input_no_key_release
-
-        ld      b, a
-        ld      a, (buflen)
-        cp      BUFMAX
-        jr      nc, _input_no_key_release
-        ld      hl, buf
-        ld      e, a
-        ld      d, 0
-        add     hl, de
-        ld      (hl), b
-        inc     a
-        ld      (buflen), a
-        inc     hl
-        ld      (hl), 0
-        call    redraw_line
-        jr      _input_wait_release
-
-_input_no_key_release:
-_input_wait_release:
-        bcall(_GetCSC)
-        or      a
-        jr      nz, _input_wait_release
-        xor     a
-        ld      (last_sk), a
-        jp      input_loop
-
-on_alpha:
-        ld      a, (alpha)
-        xor     1
-        ld      (alpha), a
-        call    redraw_alpha
-        jr      _input_wait_release
-
-on_del:
-        ld      a, (buflen)
-        or      a
-        jp      z, _input_wait_release
-        dec     a
-        ld      (buflen), a
-        ld      hl, buf
-        ld      e, a
-        ld      d, 0
-        add     hl, de
-        ld      (hl), 0
-        call    redraw_line
-        jp      _input_wait_release
-
-on_enter:
-        ld      a, (buflen)
-        or      a
-        jp      z, _input_wait_release      ; empty line: no-op
-
-        ; If CHATMSG already exists from a prior session, delete so
-        ; _CreateAppVar gets a clean slot.
-        ld      hl, op1_chatmsg_name
+        ld      hl, op1_str1
         rst     rMOV9TOOP1
         bcall(_ChkFindSym)
-        jr      c, _enter_create
-        bcall(_DelVarArc)
+        ret     c                       ; Str1 not defined; bail silently
 
-_enter_create:
-        ld      hl, op1_chatmsg_name
+        ; _SendVarCmd reads the variable named by OP1. _ChkFindSym may
+        ; have left OP1 alone but reload to be defensive: silent-link
+        ; bcalls are documented to clobber OP-area scratch.
+        ld      hl, op1_str1
         rst     rMOV9TOOP1
-        ld      a, (buflen)
-        ld      l, a
-        ld      h, 0
-        bcall(_CreateAppVar)            ; out: DE -> [size_lo,size_hi,data]
-        jr      c, _enter_err
-
-        inc     de
-        inc     de
-        ld      hl, buf
-        ld      a, (buflen)
-        ld      c, a
-        ld      b, 0
-        ldir
-
-        ld      hl, op1_chatmsg_name
-        rst     rMOV9TOOP1
-        bcall(_SendVarCmd)              ; calc-as-master push to Pico
-        jr      c, _enter_err
-
-        ; Send succeeded. Exit cleanly to the home screen so the OS's
-        ; idle silent-link service can receive the Pico's CHATIN push.
-        ; User re-runs CHAT to see the reply (rendered on row 2 by
-        ; render_chatin_if_present at startup).
-        jp      done
-
-_enter_err:
-        ; Mark failure with an "X" at row 0, col 15. User can press
-        ; CLEAR to exit and try again.
-        ld      hl, $0F00
-        ld      (curRow), hl
-        ld      a, 'X'
-        bcall(_PutC)
-        jp      _input_wait_release
-
-done:
-        bcall(_ClrLCDFull)
+        bcall(_SendVarCmd)
         ret
 
-; render_chatin_if_present: if AppVar CHATIN exists in NVRAM, render
-; up to 16 ASCII chars on row 2 col 0 and delete it. No-op otherwise.
-; Called once on entry. Does not loop.
-render_chatin_if_present:
-        ld      hl, op1_chatin_name
-        rst     rMOV9TOOP1
-        bcall(_ChkFindSym)
-        ret     c                        ; not found
-
-        ; DE -> [size_lo, size_hi, data...]. Read size_le16 into BC,
-        ; advance DE to the data bytes.
-        ld      a, (de)
-        ld      c, a
-        inc     de
-        ld      a, (de)
-        ld      b, a
-        inc     de
-
-        ; Cap at 16 chars (one screen row). >255 implies cap.
-        ld      a, b
-        or      a
-        jr      nz, _rci_cap
-        ld      a, c
-        cp      16
-        jr      c, _rci_have_n
-_rci_cap:
-        ld      a, 16
-_rci_have_n:
-        ; A = byte count (<=16). Copy from DE into inbuf so we own the
-        ; bytes before any bcall touches DE.
-        ld      hl, inbuf
-        ld      (inbuf_n), a
-        or      a
-        jr      z, _rci_done_copy
-        ld      c, a
-        ld      b, 0
-        ex      de, hl              ; HL = src (var data), DE = dst (inbuf)
-        ldir
-_rci_done_copy:
-        ld      hl, $0002
-        ld      (curRow), hl
-        bcall(_EraseEOL)
-
-        ; Print inbuf_n bytes from inbuf. DE/BC are free now: we own
-        ; the data and can survive _PutC trashing registers.
-        ld      a, (inbuf_n)
-        or      a
-        jr      z, _rci_delete
-        ld      b, a
-        ld      hl, inbuf
-_rci_loop:
-        ld      a, (hl)
-        push    hl
-        push    bc
-        bcall(_PutC)
-        pop     bc
-        pop     hl
-        inc     hl
-        djnz    _rci_loop
-
-_rci_delete:
-        ld      hl, op1_chatin_name
-        rst     rMOV9TOOP1
-        bcall(_DelVarArc)
-        ret
-
-; redraw_line: rewrite the input row at row 7 col 0 from buf.
-redraw_line:
-        ld      hl, $0007
-        ld      (curRow), hl
-        bcall(_EraseEOL)
-        ld      hl, buf
-        bcall(_PutS)
-        ret
-
-; redraw_alpha: 'A' at row 0 col 14 if alpha mode on, space otherwise.
-redraw_alpha:
-        ld      hl, $0E00
-        ld      (curRow), hl
-        ld      a, (alpha)
-        or      a
-        ld      a, ' '
-        jr      z, _ra_put
-        ld      a, 'A'
-_ra_put:
-        bcall(_PutC)
-        ret
-
-; sk_to_ascii: A in = scan code (sk*); A out = ASCII or 0 if unmapped.
-; In alpha mode searches alpha_table first; otherwise normal_table.
-sk_to_ascii:
-        ld      c, a
-        ld      a, (alpha)
-        or      a
-        jr      z, _sk_normal
-        ld      hl, alpha_table
-        call    _sk_lookup
-        or      a
-        ret     nz
-_sk_normal:
-        ld      a, c
-        ld      hl, normal_table
-        call    _sk_lookup
-        ret
-
-; _sk_lookup: HL -> [sk, ascii] pairs, terminator = sk byte 0. C = sk
-; to find. Returns A = ASCII or 0.
-_sk_lookup:
-        ld      a, (hl)
-        or      a
-        ret     z
-        cp      c
-        jr      z, _skl_hit
-        inc     hl
-        inc     hl
-        jr      _sk_lookup
-_skl_hit:
-        inc     hl
-        ld      a, (hl)
-        ret
-
-normal_table:
-        .db     sk0,      '0'
-        .db     sk1,      '1'
-        .db     sk2,      '2'
-        .db     sk3,      '3'
-        .db     sk4,      '4'
-        .db     sk5,      '5'
-        .db     sk6,      '6'
-        .db     sk7,      '7'
-        .db     sk8,      '8'
-        .db     sk9,      '9'
-        .db     skDecPnt, '.'
-        .db     skAdd,    '+'
-        .db     skSub,    '-'
-        .db     skMul,    '*'
-        .db     skDiv,    '/'
-        .db     skLParen, '('
-        .db     skRParen, ')'
-        .db     skComma,  ','
-        .db     0
-
-alpha_table:
-        .db     skMath,   'A'
-        .db     skPrgm,   'C'
-        .db     skRecip,  'D'
-        .db     skSin,    'E'
-        .db     skCos,    'F'
-        .db     skTan,    'G'
-        .db     skPower,  'H'
-        .db     skSquare, 'I'
-        .db     skComma,  'J'
-        .db     skLParen, 'K'
-        .db     skRParen, 'L'
-        .db     skDiv,    'M'
-        .db     skLog,    'N'
-        .db     sk7,      'O'
-        .db     sk8,      'P'
-        .db     sk9,      'Q'
-        .db     skMul,    'R'
-        .db     sk4,      'S'
-        .db     sk5,      'T'
-        .db     sk6,      'U'
-        .db     skSub,    'V'
-        .db     sk1,      'W'
-        .db     sk2,      'X'
-        .db     sk3,      'Y'
-        .db     skAdd,    'Z'
-        .db     sk0,      ' '
-        .db     skDecPnt, ':'
-        .db     skChs,    '?'
-        .db     0
-
-banner:  .db    "asm_chat", 0
-
-op1_chatmsg_name:
-        .db     AppVarObj, "CHATMSG", 0
-op1_chatin_name:
-        .db     AppVarObj, "CHATIN", 0, 0
-
-buf:     .db    0
-        .fill   BUFMAX, 0
-buflen:  .db    0
-alpha:   .db    0
-last_sk: .db    0
-inbuf_n: .db    0
-inbuf:   .fill   16, 0
+op1_str1:
+        .db     StrngObj, tVarStrng, tStr1, 0, 0, 0, 0, 0, 0
 
 .end

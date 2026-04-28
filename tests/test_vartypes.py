@@ -1,8 +1,8 @@
 import pytest
 
 from vartypes import (
-    T_REAL, T_LIST, T_PROG, T_PROG_LOCKED,
-    list_name_82, real_name, prog_name, make_var_header,
+    T_REAL, T_LIST, T_PROG, T_PROG_LOCKED, T_STRING, T_VAR_STRNG,
+    list_name_82, real_name, prog_name, str_name, make_var_header,
     parse_real_str, parse_real, parse_real_list_str,
     encode_real, encode_real_list,
 )
@@ -31,6 +31,29 @@ def test_prog_name_padding_and_validation():
         prog_name("TOOLONGNAME")
     with pytest.raises(ValueError):
         prog_name("lower")
+
+
+def test_str_name_str1_str2():
+    # tStr1 = 0, tStr2 = 1; name8 = [0xAA, idx, 0,0,0,0,0,0].
+    assert str_name(1) == bytes([T_VAR_STRNG, 0x00, 0, 0, 0, 0, 0, 0])
+    assert str_name(2) == bytes([T_VAR_STRNG, 0x01, 0, 0, 0, 0, 0, 0])
+
+
+def test_str_name_str0_is_slot_9():
+    # The calc displays Str0 last but stores it at index 9.
+    assert str_name(0) == bytes([T_VAR_STRNG, 0x09, 0, 0, 0, 0, 0, 0])
+
+
+def test_str_name_invalid():
+    with pytest.raises(ValueError):
+        str_name(10)
+    with pytest.raises(ValueError):
+        str_name(-1)
+
+
+def test_t_string_is_4():
+    # StrngObj per ti83plus.inc.
+    assert T_STRING == 0x04
 
 
 def test_make_var_header_82_real_a():

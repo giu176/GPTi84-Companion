@@ -10,8 +10,23 @@ The variable header field that wraps the payload differs between TI-82
 T_REAL   = 0x00
 T_LIST   = 0x01
 T_MATRIX = 0x02
+T_STRING = 0x04
 T_PROG   = 0x05
 T_PROG_LOCKED = 0x06
+
+# String var name encoding. The 8-byte name field for system Strs is
+# [tVarStrng=0xAA, tStrN, 0,0,0,0,0,0]; tStr1=0x00, tStr2=0x01, ...,
+# tStr9=0x08, tStr0=0x09 (note Str0 is index 9, not 0).
+T_VAR_STRNG = 0xAA
+STR_INDEX = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 0: 9}
+
+
+def str_name(n):
+    """8-byte name field for system string Str0..Str9. n is the user-visible
+    digit (1..9, then 0 wraps to slot 9). Returns [0xAA, idx, 0,0,0,0,0,0]."""
+    if n not in STR_INDEX:
+        raise ValueError("Str number must be 0..9")
+    return bytes([T_VAR_STRNG, STR_INDEX[n]]) + b'\x00' * 6
 
 
 def list_name_82(idx):

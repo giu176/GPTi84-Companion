@@ -14,22 +14,26 @@ States (onboard LED on machine.Pin("LED")):
 Blink is cooperative: ticked between DBUS packets. A long DBUS transfer
 freezes the LED, which is informative -- the thing is busy on the wire.
 
-Direction model (post-2026-04-29):
-  calc -> Pico   : on_var callback in listen_loop ships the AppVar body
+Direction model (post-2026-04-28 Str1/Str2 pivot):
+  calc -> Pico   : asm program _SendVarCmds Str1 to us. on_var callback
+                   sees a String var (type 0x04, name [0xAA, tStr1, ...]),
+                   translates the token stream to ASCII, ships the text
                    over TCP.
-  Pico -> calc   : when a desktop frame arrives, Pico immediately runs
-                   transfer.send_var(APPVAR, b"CHATIN", body, 0x73). The
-                   calc must be at the home screen (or equivalently in
-                   a clean asm-exit handoff back to the home screen) for
-                   the OS's idle silent-link service to receive it. The
-                   AppVar lands in NVRAM; user re-runs CHAT to see the
-                   reply.
+  Pico -> calc   : when a desktop frame arrives, translate ASCII back to
+                   tokens and PC-master push as Str2. Calc must be at
+                   the home screen for the OS's idle silent-link receive
+                   to accept it; the asm program exits immediately after
+                   _SendVarCmd so the calc is back at the home screen
+                   by the time the desktop reply round-trips.
+
+User UX: at home screen, "text"->Str1, run prgmCHAT, then Str2 ENTER
+to see the reply.
 
 Why PC-master push and not calc-master REQ: every variant of calc-as-
 master receive we tried (_GetSmallPacket, _GetVariableData inside the
 asm program) wedges the calc's keypad matrix post-recv. PC-master push
-to a calc at the home screen completes cleanly with the keypad alive
-afterwards. Two-step UX (re-run CHAT after each reply) is the price.
+to a calc at the home screen completes cleanly. Two-step UX (run, then
+Str2 to see reply) is the price.
 """
 
 import time
@@ -37,7 +41,9 @@ import time
 import machine
 
 import net
+import tokens
 import transfer
+from vartypes import T_STRING, str_name
 
 
 LED = machine.Pin("LED", machine.Pin.OUT)
@@ -105,31 +111,33 @@ def _wifi_with_retry():
             backoff = min(backoff * 2, 30)
 
 
-CHATIN_NAME = b"CHATIN\x00\x00"
-APPVAR = 0x15
+STR2_NAME = str_name(2)
 
-# 84+ silent receive accepts AppVars far larger than our ASCII chat
-# bodies; cap conservatively so we don't flood the home screen render
-# with multi-row payloads.
-INMAX_BYTES = 64
+# Calc Strings round-trip cleanly at small sizes; cap so a long LLM
+# reply doesn't blow past silent-link receive limits or wrap the home
+# screen into illegible scroll.
+INMAX_CHARS = 128
 
 
-def _frame_to_appvar_payload(frame):
-    """Convert a desktop-supplied frame into the wire-format AppVar body
-    the calc expects: [size_le16][bytes]. Truncates to INMAX_BYTES."""
-    body = bytes(frame)[:INMAX_BYTES]
+def _ascii_to_str_payload(text):
+    """ASCII -> wire-format String var body: [size_le16][token_bytes...].
+    Drops chars the TI charset doesn't have a phase-1 mapping for."""
+    text = text[:INMAX_CHARS]
+    body = tokens.ascii_to_tokens_lossy(text, drop_unknown=True)
     return bytes([len(body) & 0xFF, (len(body) >> 8) & 0xFF]) + body
 
 
-def _push_chatin(frame):
-    """PC-master push of an inbound desktop frame to the calc as
-    AppVar CHATIN. Calls transfer.send_var with the 84+ native machine
-    ID. Returns True on success, False on any failure (logged)."""
-    wire = _frame_to_appvar_payload(frame)
-    print("bridge: pushing CHATIN to calc (", len(wire), "wire bytes,",
-          len(frame), "raw,", repr(frame[:INMAX_BYTES]), ")")
+def _push_str2(frame):
+    """PC-master push of an inbound desktop frame to the calc as Str2.
+    Frame is treated as ASCII text. Returns True on success."""
+    # Coerce bytes -> printable-ASCII str without relying on the
+    # `errors=` kwarg (MicroPython's decode() doesn't accept it).
+    text = "".join(chr(b) if 0x20 <= b < 0x7F else "?" for b in bytes(frame))
+    wire = _ascii_to_str_payload(text)
+    print("bridge: pushing Str2 to calc (", len(wire), "wire bytes,",
+          len(text), "chars,", repr(text[:INMAX_CHARS]), ")")
     try:
-        ok = transfer.send_var(APPVAR, CHATIN_NAME, wire,
+        ok = transfer.send_var(T_STRING, STR2_NAME, wire,
                                calc_machine=0x73, quiet=True)
     except Exception as e:
         print("bridge: send_var raised:", e)
@@ -140,15 +148,25 @@ def _push_chatin(frame):
 
 
 def _make_on_var(sock_holder):
-    """Build an on_var callback that ships calc-initiated AppVar bodies
-    over the socket. Drops the AppVar size prefix."""
+    """Build an on_var callback that ships calc-initiated var bodies over
+    the socket. Strips the [size_le16] prefix on size-prefixed types and
+    translates String token streams to ASCII before relaying."""
+
+    # Types whose payload starts with a 2-byte size word: Program, Locked
+    # Program, AppVar, String. _SendVarCmd wraps the raw data in a count
+    # so the calc-side parser knows where the body ends.
+    SIZE_PREFIXED = (0x04, 0x05, 0x06, 0x15)
 
     def on_var(type_id, name8, hdr, data):
         payload = data
-        if type_id in (0x05, 0x06, 0x15) and len(data) >= 2:
+        if type_id in SIZE_PREFIXED and len(data) >= 2:
             declared = data[0] | (data[1] << 8)
             if declared == len(data) - 2:
                 payload = data[2:]
+        if type_id == 0x04:
+            # String var: translate token stream to ASCII for desktop.
+            text = tokens.tokens_to_ascii(payload)
+            payload = text.encode("ascii")
         stripped = bytes(name8).rstrip(b"\x00")
         print("bridge: on_var type=", hex(type_id), "name=", stripped,
               "len=", len(payload), "-> relay")
@@ -197,7 +215,7 @@ def run(name=None, expected_type=None):
             transfer.listen_loop(on_var=on_var, timeout_ms=500)
             _tick_led()
             # Drain any inbound desktop frames and push each to the
-            # calc as CHATIN. send_var blocks on the wire while the
+            # calc as Str2. send_var blocks on the wire while the
             # handshake completes; it's fine to do this synchronously
             # because calc-side traffic is paused (we just returned
             # from listen_loop with no calc activity).
@@ -206,7 +224,14 @@ def run(name=None, expected_type=None):
                 if inbound is None:
                     break
                 _flash()
-                _push_chatin(inbound)
+                # Settle: the calc OS needs wallclock time to unwind the
+                # asm program (CHAT.z80's `ret`) back to the home screen
+                # and re-arm its idle silent-link receive. Without this,
+                # the inbound RTS hits the calc before it's listening
+                # and gets no ACK. 2s is comfortably above the floor we
+                # measured; reduce only with hardware retesting.
+                time.sleep_ms(2000)
+                _push_str2(inbound)
         except KeyboardInterrupt:
             print("bridge: interrupted")
             try:
