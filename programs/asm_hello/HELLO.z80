@@ -2,7 +2,7 @@
 ; writes a string, waits for any key, returns to the OS.
 ;
 ; Build:
-;   spasm -I references/spasm programs/asm_hello/HELLO.z80 programs/asm_hello/HELLO.8xp
+;   spasm -I references/other_projects/spasm programs/asm_hello/HELLO.z80 programs/asm_hello/HELLO.8xp
 ;
 ; spasm-ng emits a complete .8Xp file (header + entry + checksum) and uses
 ; the AsmPrgm token (BB 6D) automatically when the source begins with the

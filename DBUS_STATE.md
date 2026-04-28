@@ -60,7 +60,7 @@ flows round-trip data byte-perfectly** (see "Packet layer" below).
 
 - 16-bit checksum is the lower 16 bits of the byte-wise sum of `data`.
 - The checksum field is omitted when `length == 0`.
-- Proven against the TI Link Guide examples in `references/linkguide/`.
+- Proven against the TI Link Guide examples in `references/other_projects/linkguide/`.
 
 ## Calc-initiated flows (proven working)
 
@@ -258,7 +258,7 @@ What this proves:
   PC-initiated send (`send_var`, `put_real`, `put_l1`, plus their `_83p`
   variants on machine 0x73), and several upload diagnostics (`ready_check`,
   `delete_var`, `probe_rts_reply`, `recv_n_traced`).
-- `references/linkguide/` -- vendored copy of the TI Link Guide. Key
+- `references/other_projects/linkguide/` -- vendored copy of the TI Link Guide. Key
   pages: `ti83+/silent.html`, `ti83+/packet.html`, `ti83+/vars.html`,
   `ti82/silent.html`, `ti82/packet.html`.
 

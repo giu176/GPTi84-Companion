@@ -5,7 +5,7 @@ PYTEST  := ".venv/bin/pytest"
 MPR     := "mpremote"
 SRC     := "src"
 SPASM   := "spasm"
-SPASM_INC := "references/spasm"
+SPASM_INC := "references/other_projects/spasm"
 
 # default: list recipes
 default:

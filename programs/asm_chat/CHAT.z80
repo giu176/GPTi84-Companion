@@ -1,0 +1,127 @@
+; CHAT.z80: chat-UI stub. Reads keys via _GetKey, displays the running
+; input line, and clears on [ENTER] (we'll wire the DBUS send next).
+; [CLEAR] exits back to the OS.
+;
+; Build:
+;   just asm programs/asm_chat/CHAT.z80
+; Push:
+;   just push-asm programs/asm_chat/CHAT.z80
+
+.nolist
+#include "ti83plus.inc"
+.list
+
+.org    $9D93
+.db     t2ByteTok, tAsmCmp
+
+BUFMAX  .equ    64              ; max chars per line before forced flush
+
+        bcall(_ClrLCDFull)
+        ld      hl, 0
+        ld      (curRow), hl
+        ld      hl, banner
+        bcall(_PutS)
+        bcall(_NewLine)
+
+        ld      a, 0
+        ld      (buflen), a
+
+input_loop:
+        bcall(_GetKey)           ; A = key code (skKey* equates)
+        cp      skClear
+        jr      z, done
+        cp      skEnter
+        jr      z, on_enter
+        cp      skDel
+        jr      z, on_del
+
+        ; Map A to a printable ASCII char (0 if not mapped).
+        call    key_to_ascii
+        or      a
+        jr      z, input_loop    ; unmapped -> ignore
+
+        ; Append to buffer if room.
+        ld      b, a
+        ld      a, (buflen)
+        cp      BUFMAX
+        jr      nc, input_loop   ; full -> ignore until enter
+        ld      hl, buf
+        ld      e, a
+        ld      d, 0
+        add     hl, de
+        ld      (hl), b
+        inc     a
+        ld      (buflen), a
+        ; Null-terminate so PutS works.
+        inc     hl
+        ld      (hl), 0
+
+        call    redraw_line
+        jr      input_loop
+
+on_del:
+        ld      a, (buflen)
+        or      a
+        jr      z, input_loop
+        dec     a
+        ld      (buflen), a
+        ld      hl, buf
+        ld      e, a
+        ld      d, 0
+        add     hl, de
+        ld      (hl), 0
+        call    redraw_line
+        jr      input_loop
+
+on_enter:
+        ; TODO: ship (buf, buflen) over DBUS to the Pico.
+        ; For now, just clear the line and keep going.
+        ld      a, 0
+        ld      (buflen), a
+        ld      hl, buf
+        ld      (hl), 0
+        call    redraw_line
+        jr      input_loop
+
+done:
+        bcall(_ClrLCDFull)
+        ret
+
+; Redraw the bottom-of-screen input line. Clears row 7, then PutS the buffer.
+redraw_line:
+        ld      hl, $0007        ; row=7, col=0  (curRow=hi? on 83+ curRow is at row 0..7, but layout is curRow,curCol)
+        ld      (curRow), hl
+        bcall(_EraseEOL)
+        ld      hl, buf
+        bcall(_PutS)
+        ret
+
+; key_to_ascii: A in = skKey* code, A out = ASCII char or 0 if unmapped.
+; Minimal coverage for now: digits + space + decimal point. Letters need
+; the alpha-shift state machine, which we can layer on later.
+key_to_ascii:
+        cp      skSpace
+        jr      nz, _k1
+        ld      a, ' '
+        ret
+_k1:    cp      skDecPnt
+        jr      nz, _k2
+        ld      a, '.'
+        ret
+_k2:    cp      sk0
+        jr      c, _knone
+        cp      sk9 + 1
+        jr      nc, _knone
+        ; sk0..sk9 are contiguous in skKey order: 0,1,2,...,9
+        sub     sk0
+        add     a, '0'
+        ret
+_knone: xor     a
+        ret
+
+banner: .db     "asm_chat", 0
+buf:    .db     0
+        .fill   BUFMAX, 0
+buflen: .db     0
+
+.end
