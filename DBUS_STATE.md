@@ -3,6 +3,19 @@
 Snapshot of what is proven on the Pico/MicroPython side of the 2.5mm link
 to a TI-84 Plus, as of 2026-04-28.
 
+**Status as of this update: bidirectional variable transfer on 84+ native
+(machine 0x73) is working for `T_REAL`, `T_LIST`, and `T_PROG`. A real,
+a real-list, and a TI-BASIC program have all been pushed from the Pico
+to a real calc and verified on-device. The program (named `SEX`,
+`Disp "SEXY)LOL"`) was driven through the same `send_var` plumbing as
+reals and lists, with the payload extracted from a stock `.8Xp` file.
+
+Critical UI-state finding: PC-initiated send works while the calc is
+**idle at the home screen**. Do NOT dive into `2nd LINK -> RECEIVE ->
+1: Receive` "Waiting..." mode for native (0x73) sends; that mode is
+wired to the older 0x82 TI-82-compat path and can actually break native
+RTS handling.**
+
 ## Hardware setup
 
 - **MCU**: Raspberry Pi Pico 1 W running MicroPython.
@@ -66,10 +79,10 @@ These work end-to-end against a real TI-84+:
 These flows exercise both directions of the bit layer and exercise our
 checksum and framing code in both encoding and decoding directions.
 
-## PC-initiated send (native real upload working)
+## PC-initiated send (native real and list upload working)
 
-The native TI-83+/TI-84+ upload path now succeeds for at least a simple
-real variable send:
+The native TI-83+/TI-84+ upload path succeeds for both single reals and
+real-number lists:
 
 ```
 >>> dbus.put_real_83p('A', 1.5, quiet=True)
@@ -77,7 +90,23 @@ sending DATA
 pkt: cmd= 0x56
 done
 True
+
+>>> dbus.put_l1_83p([1.0, 2.0, 3.0])
+sending RTS for type= 0x1 name= b']\x00\x00\x00\x00\x00\x00\x00' len= 29
+RTS bytes: 23 C9 0D 00 1D 00 01 5D 00 00 00 00 00 00 00 00 00 7B 00
+RTS sent in 42269 us
+ACK received 8747 us after RTS done
+CTS received 37154 us after ACK done
+pkt: cmd= 0x9 body_len= 0
+sending DATA
+pkt: cmd= 0x56
+done
+True
 ```
+
+The list path uses the same `send_var` plumbing as the real path; the only
+new surface is the count-prefixed multi-real DATA payload, which the calc
+accepts without further timing tweaks.
 
 The critical discovery was that the calc *was* sending CTS after RTS, but
 our packet parser was discarding it. After `RTS`, a traced reply showed:
@@ -101,6 +130,76 @@ Related diagnostics that helped pin this down:
   `RTS`, proving the calc accepts our machine ID and header encoding.
 - `probe_rts_real_83p('A', 1.5)` showed the calc really was transmitting CTS;
   the bug was entirely in our packet receive logic.
+
+## Program send (proven working)
+
+A TI-BASIC program extracted from a stock `.8Xp` file was pushed to a
+real 84+ and ran successfully on-device:
+
+```
+>>> dbus.put_prog_83p('SEX', b'\x0b\x00\xde*SEXY)LOL*', quiet=True)
+sending DATA
+pkt: cmd= 0x56
+done
+True
+```
+
+After the call, `PRGM -> EXEC -> SEX` shows the program and running it
+prints `SEXY)LOL` to the home screen.
+
+Process for getting the payload bytes from a `.8Xp` file:
+
+1. The `.8Xp` file layout is `[8-byte sig "**TI83F*"][3-byte sub 1A 0A 00]
+   [42-byte comment][2-byte data section length le16][var entries...]
+   [2-byte file checksum le16]`.
+2. Each var entry is `[2-byte entry-header-length=0x000D][2-byte var data
+   size le16][1-byte type ID][8-byte name][1-byte version=0][1-byte flags
+   =0][2-byte var data size le16, repeated][var data]`.
+3. The "var data" you extract from offset 17 of a var entry is exactly
+   what `send_var` wants as its DATA payload. For programs that's
+   `[2-byte token-stream length le16][token bytes]`.
+
+Verified that programs use the same handshake plumbing as reals and
+lists; the only differences are `type_id = 0x05` (unlocked) or `0x06`
+(locked) and the name field is ASCII (`SEX\x00\x00\x00\x00\x00`) rather
+than a list-token form.
+
+## Round-trip (proven working)
+
+A push-then-pull round-trip on a real-number list completes cleanly with
+the calc serving the same bytes back:
+
+```
+>>> dbus.put_l1_83p([1.5, -2.25, 3.0, 1e10, -1e-5])
+... done
+True
+>>> hdr, data = dbus.get_l1()
+sending REQ for type= 0x1 name= b']\x00\x00\x00\x00\x00\x00\x00'
+pkt: cmd= 0x56
+pkt VAR: cmd= 0x6 hdr= b'/\x00\x01]\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+pkt: cmd= 0x56
+pkt DATA: cmd= 0x15 len= 47
+>>> dbus.parse_real_list_str(data)
+['1.5', '-2.25', '3', '10000000000', '-1e-5']
+```
+
+What this proves:
+
+- **Bidirectional variable transfer is real**: the same `send_var`/`req_var`
+  pair on machine ID `0x73` carries data both ways without losing or
+  reordering bytes. DATA payload of 47 bytes (count prefix + 5 reals) was
+  echoed back exactly.
+- **The calc returns its VAR header in 13-byte 83+ form**
+  (`2F 00 01 5D 00 00 00 00 00 00 00 00 00`), confirming the calc is
+  speaking native silent protocol and not falling back to TI-82 compat.
+- **`5D 00` list-name encoding is accepted by the 84+ for L1** in both
+  directions; no separate "83+ list name" form needed.
+- **`encode_real` / `parse_real_str` are lossless** across the 14-digit BCD
+  mantissa under MicroPython's 32-bit floats. `1e-5` survives precisely.
+  `1e10` is displayed as `10000000000` because `parse_real_str` only
+  switches to scientific notation for `exp >= 14` or `exp <= -5`; that is
+  a display choice, not a precision loss : the underlying 9-byte real is
+  byte-identical to what was sent.
 
 ## What we have ruled out
 
@@ -128,8 +227,12 @@ Related diagnostics that helped pin this down:
 
 ## What we have NOT yet ruled out / not yet re-verified
 
-- **Larger outbound payloads**: native real upload is proven; list/matrix/
-  longer DATA payloads should still be re-run explicitly.
+- **Larger outbound payloads**: real and 5-element list both proven;
+  big lists (50+, 999), matrices, strings, and program payloads still
+  need explicit verification.
+- **Remaining variable types**: `T_MATRIX`, strings, equation vars, GDB,
+  pictures, and complex/complex-list payloads are unverified. Programs,
+  reals, and lists are all proven.
 - **Cold-calc behavior**: earlier testing showed a cold home-screen calc can
   ACK RTS without following through. The currently proven success case is the
   native upload path exercised during this debugging session, not every calc
@@ -154,11 +257,13 @@ Related diagnostics that helped pin this down:
 | Function                         | Direction      | Status   |
 |----------------------------------|----------------|----------|
 | `recv_var()`                     | calc -> Pico   | working  |
-| `req_var(type, name)` / `get_l1()` | Pico -> calc REQ, then calc -> Pico | working |
+| `req_var(type, name)` / `get_l1()` | Pico -> calc REQ, then calc -> Pico | working on 0x73 (default) |
 | `ready_check()` (RDY 0x68)       | Pico -> calc   | useful probe; only ACKs in silent-receive mode |
 | `send_var(...)` / `put_real(...)` | Pico -> calc | working for native real upload |
 | `put_real_83p(...)` | Pico -> calc, machine 0x73 | working |
-| `put_l1(...)` / `put_l1_83p(...)` | Pico -> calc | unverified after parser fix |
+| `put_l1_83p(...)` | Pico -> calc, machine 0x73 | working |
+| `put_prog_83p(name, payload, locked=...)` | Pico -> calc, machine 0x73 | working |
+| `put_l1(...)` | Pico -> calc, machine 0x82 | unverified (TI-82 compat path) |
 | `delete_var(...)` / `del_real_83p()` | Pico -> calc | working diagnostic |
 | `probe_rts_reply(...)` / `probe_rts_real_83p()` | Pico -> calc | working diagnostic |
 | `snoop()`                        | passive line monitor | working diagnostic |

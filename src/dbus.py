@@ -453,9 +453,10 @@ def go():
     return first_bits(16)
 
 
-def get_l1():
-    """Convenience: request L1 from the calc (TI-82 protocol)."""
-    return req_var(T_LIST, list_name_82(0))
+def get_l1(calc_machine=0x73):
+    """Convenience: request L1 from the calc.
+    Defaults to 83+/84+ native (0x73); pass calc_machine=0x82 for TI-82 compat."""
+    return req_var(T_LIST, list_name_82(0), calc_machine=calc_machine)
 
 
 def encode_real(value):
@@ -623,6 +624,37 @@ def put_real(letter, value, calc_machine=0x82, quiet=False):
 
 def put_real_83p(letter, value, quiet=False):
     return put_real(letter, value, calc_machine=0x73, quiet=quiet)
+
+
+def prog_name(name):
+    """8-byte name field for a program. ASCII uppercase A..Z and digits 0..9,
+    1..8 chars, zero-padded to 8."""
+    if not (1 <= len(name) <= 8):
+        raise ValueError("prog name must be 1..8 chars")
+    for c in name:
+        if not (('A' <= c <= 'Z') or ('0' <= c <= '9')):
+            raise ValueError("prog name must be uppercase A..Z or 0..9")
+    return name.encode("ascii") + b'\x00' * (8 - len(name))
+
+
+def put_prog(name, payload, locked=False, calc_machine=0x73, quiet=False):
+    """Send a program payload to the calc.
+
+    payload is the raw variable body: [size_le16][token_stream]. This is the
+    same shape that lives inside a .8Xp file's variable entry, after the
+    13-byte entry header.
+
+    locked=False uses T_PROG=0x05 (editable); locked=True uses 0x06 (locked,
+    user can run but not view/edit). Locked is the ship-time setting; default
+    unlocked so the calc-side test can show source if anything's wrong."""
+    type_id = 0x06 if locked else 0x05
+    return send_var(type_id, prog_name(name), payload,
+                    calc_machine=calc_machine, quiet=quiet)
+
+
+def put_prog_83p(name, payload, locked=False, quiet=False):
+    return put_prog(name, payload, locked=locked, calc_machine=0x73,
+                    quiet=quiet)
 
 
 def delete_var(type_id, name8, calc_machine=0x73, timeout_ms=3000):
