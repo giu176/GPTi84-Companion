@@ -24,9 +24,11 @@ The encode path (ascii_to_tokens) is strict and only handles the ASCII subset
 our reply path produces. Asymmetric on purpose: decode is best-effort
 (unknown bytes become '?'); encode is strict (unknown chars raise).
 
-Two-byte token prefixes (0xBB, 0xEF, plus the matrix/list/picture/GDB/sysstr
-families) are detected and consume their second byte without expanding into
-the table; they emit '?' until something useful uses them.
+Two-byte token prefixes are detected and consume their second byte. The
+matrix/list/picture/GDB/StrN families decode to their human-readable names
+(L1..L6, [MatA]..[MatJ], Pic1..Pic0, GDB1..GDB0, Str1..Str0) so an LLM or
+SymPy consumer can see what variable was referenced. Other prefixes
+(0x7E mode/menu, 0xBB and 0xEF extended) still emit '?'.
 """
 
 
@@ -66,19 +68,66 @@ _TOK_TO_ASCII = {
 }
 
 # Two-byte token prefixes. When the decoder sees one of these as the lead
-# byte, it consumes the next byte too and emits '?'. Adding real entries
-# means switching to a {(prefix, lo): "string"} table; we don't need it yet.
+# byte, it consumes the next byte too. If a sub-byte mapping exists in
+# _TWO_BYTE_TO_ASCII below, that name is emitted; otherwise '?'.
 _TWO_BYTE_PREFIXES = frozenset((
-    0x5C,  # matrix
-    0x5D,  # list
-    0x60,  # picture
-    0x62,  # GDB lo
-    0x63,  # GDB hi
-    0xAA,  # system string itself (StrN)
+    0x5C,  # matrix         -- sub: tMatA..tMatJ -> [MatA]..[MatJ]
+    0x5D,  # list           -- sub: tL1..tL6     -> L1..L6
+    0x60,  # picture        -- sub: tPic1..tPic9 -> Pic1..Pic9, tPic0 -> Pic0
+    0x61,  # GDB            -- sub: tGDB1..tGDB9 -> GDB1..GDB9, tGDB0 -> GDB0
+    0xAA,  # StrN           -- sub: tStr1..tStr9, tStr0 -> Str1..Str0
     0x7E,  # mode/menu
     0xBB,  # extended
     0xEF,  # newer-OS extended
 ))
+
+
+def _numbered_with_zero_last(prefix):
+    """Build {0x00: prefix+'1', ..., 0x08: prefix+'9', 0x09: prefix+'0'}.
+
+    Mirrors the calc convention for Pic / GDB / StrN where sub-byte 0x09
+    is the user-visible '0' slot, not a tenth one."""
+    table = {}
+    for i in range(9):
+        table[i] = prefix + str(i + 1)
+    table[0x09] = prefix + "0"
+    return table
+
+
+def _list_table():
+    table = {}
+    for i in range(6):
+        table[i] = "L" + str(i + 1)
+    return table
+
+
+def _matrix_table():
+    table = {}
+    for i in range(10):
+        table[i] = "[Mat" + chr(ord("A") + i) + "]"
+    return table
+
+
+# Sub-byte tables for two-byte tokens. The second byte indexes into the
+# table; missing entries fall through to '?'. Only mathematically/textually
+# meaningful prefixes are populated -- 0x7E/0xBB/0xEF stay unmapped.
+#
+# Built with explicit helpers (not dict-spread / dict comprehensions over
+# kwargs) so this module imports cleanly under MicroPython too.
+_TWO_BYTE_TO_ASCII = {
+    # Lists L1..L6: 0x5D 0x00..0x05.
+    0x5D: _list_table(),
+    # Matrices [A]..[J]: 0x5C 0x00..0x09. Wrap in brackets so an LLM/SymPy
+    # consumer can tell them apart from a juxtaposed letter ('MATA' would be
+    # ambiguous with the four-letter word).
+    0x5C: _matrix_table(),
+    # Pic / GDB / StrN: sub byte 0x00..0x08 -> N1..N9, sub byte 0x09 -> N0.
+    0x60: _numbered_with_zero_last("Pic"),
+    0x61: _numbered_with_zero_last("GDB"),
+    # Letting StrN decode means a Str ref inside another Str shows the
+    # slot it points at instead of '?'.
+    0xAA: _numbered_with_zero_last("Str"),
+}
 
 
 # ASCII -> single-byte token. Only chars our reply path actually produces.
@@ -98,11 +147,12 @@ for _ch in range(ord("0"), ord("9") + 1):
 
 
 def _is_math_value_producer(ch):
-    """Math-mode rule: last emitted char closes a value. Digits, letters, ')'.
-    ')' also covers '^2'/'^3' (they end in a digit, also a value-producer)."""
+    """Math-mode rule: last emitted char closes a value. Digits, letters, ')',
+    or ']' (matrix tokens decode as '[MatA]' so the trailing bracket marks
+    the end of a value). '^2'/'^3' postfixes end in a digit, already covered."""
     if not ch:
         return False
-    return ch.isalnum() or ch == ")"
+    return ch.isalnum() or ch in (")", "]")
 
 
 def _is_text_value_producer(ch):
@@ -116,10 +166,11 @@ def _is_text_value_producer(ch):
 
 def _is_value_starter(ch):
     """First emitted char of a token opens a value -- needs '*' after a
-    preceding value-producer. Digits, letters, '('."""
+    preceding value-producer. Digits, letters, '(' or '[' (matrix tokens
+    decode as '[MatA]' so '[' opens a value just like '(' does)."""
     if not ch:
         return False
-    return ch.isalnum() or ch == "("
+    return ch.isalnum() or ch in ("(", "[")
 
 
 def tokens_to_ascii(tok_bytes, mode="text"):
@@ -148,7 +199,12 @@ def tokens_to_ascii(tok_bytes, mode="text"):
     while i < n:
         b = tok_bytes[i]
         if b in _TWO_BYTE_PREFIXES:
-            piece = "?"
+            sub = tok_bytes[i + 1] if i + 1 < n else None
+            sub_table = _TWO_BYTE_TO_ASCII.get(b)
+            if sub_table is not None and sub is not None and sub in sub_table:
+                piece = sub_table[sub]
+            else:
+                piece = "?"
             i += 2  # consume prefix + next byte unconditionally
         else:
             i += 1

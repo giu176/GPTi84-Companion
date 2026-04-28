@@ -233,3 +233,83 @@ def test_math_decode_paren_X_plus_1_squared():
     # (X+1)^2 -> [(][tX][tAdd][t1][)][tSqr] -> "(X+1)^2"
     wire = bytes([0x10, 0x58, 0x70, 0x31, 0x11, 0x0D])
     assert tokens_to_ascii(wire, mode="math") == "(X+1)^2"
+
+
+# ---- Two-byte tokens: list / matrix / picture / GDB / StrN ----
+
+def test_two_byte_list_l1_decodes():
+    # 0x5D 0x00 is L1.
+    assert tokens_to_ascii(bytes([0x5D, 0x00])) == "L1"
+    assert tokens_to_ascii(bytes([0x5D, 0x05])) == "L6"
+
+
+def test_two_byte_list_unknown_sub_falls_through():
+    # Custom-name lists use sub-bytes >= 0x06 with extra trailing bytes;
+    # we don't decode those and emit '?' instead. Important: still
+    # consumes exactly one sub-byte so the next token doesn't get eaten.
+    assert tokens_to_ascii(bytes([0x5D, 0x40, 0x41])) == "?A"
+
+
+def test_two_byte_matrix_decodes_with_brackets():
+    # [MatA] -- bracketed so a downstream parser can tell it apart from
+    # the four-letter word 'MATA'.
+    assert tokens_to_ascii(bytes([0x5C, 0x00])) == "[MatA]"
+    assert tokens_to_ascii(bytes([0x5C, 0x09])) == "[MatJ]"
+
+
+def test_two_byte_picture_and_gdb_decode():
+    # Pic1..Pic9 then Pic0 (sub byte 0x09 maps to Pic0). Same pattern for GDB.
+    assert tokens_to_ascii(bytes([0x60, 0x00])) == "Pic1"
+    assert tokens_to_ascii(bytes([0x60, 0x09])) == "Pic0"
+    assert tokens_to_ascii(bytes([0x61, 0x00])) == "GDB1"
+    assert tokens_to_ascii(bytes([0x61, 0x09])) == "GDB0"
+
+
+def test_two_byte_strn_decodes():
+    # An embedded Str ref shows the slot it points at.
+    assert tokens_to_ascii(bytes([0xAA, 0x00])) == "Str1"
+    assert tokens_to_ascii(bytes([0xAA, 0x09])) == "Str0"
+
+
+def test_extended_prefix_still_unknown():
+    # 0xBB is still unmapped -- we have no entries for the extended family.
+    # Important regression: the prefix must still be recognised so the
+    # second byte is consumed (not mis-decoded as a standalone token).
+    assert tokens_to_ascii(bytes([0xBB, 0x31])) == "?"
+    assert tokens_to_ascii(bytes([0xEF, 0x10])) == "?"
+
+
+def test_math_mode_implicit_mult_around_list_token():
+    # 2L1 -> '2*L1' (digit then value-starter 'L').
+    assert tokens_to_ascii(bytes([0x32, 0x5D, 0x00]), mode="math") == "2*L1"
+    # L1+L2 has no juxtaposition, no extra '*'.
+    assert tokens_to_ascii(bytes([0x5D, 0x00, 0x70, 0x5D, 0x01]),
+                           mode="math") == "L1+L2"
+    # L1X -> 'L1*X'. The trailing '1' is a digit (value-producer); 'X' is
+    # a value-starter; '*' inserts.
+    assert tokens_to_ascii(bytes([0x5D, 0x00, 0x58]), mode="math") == "L1*X"
+
+
+def test_math_mode_implicit_mult_around_matrix_token():
+    # 2[MatA] -> '2*[MatA]' ('[' counts as a value-starter).
+    assert tokens_to_ascii(bytes([0x32, 0x5C, 0x00]), mode="math") == "2*[MatA]"
+    # [MatA]X -> '[MatA]*X' (']' counts as a value-producer).
+    assert tokens_to_ascii(bytes([0x5C, 0x00, 0x58]), mode="math") == "[MatA]*X"
+    # Two matrices side by side: matrix multiplication.
+    assert tokens_to_ascii(bytes([0x5C, 0x00, 0x5C, 0x01]),
+                           mode="math") == "[MatA]*[MatB]"
+
+
+def test_text_mode_no_mult_inside_list_label():
+    # 'L1' in text shouldn't internally split as 'L*1'. The decoder emits
+    # 'L1' as one piece, so there's no chance to insert a '*' inside it.
+    assert tokens_to_ascii(bytes([0x5D, 0x00])) == "L1"
+    # 'CHECK L1' -- letters then space then 'L1'. Space is tSpace (0x29).
+    wire = bytes([0x43, 0x48, 0x45, 0x43, 0x4B, 0x29, 0x5D, 0x00])
+    assert tokens_to_ascii(wire) == "CHECK L1"
+
+
+def test_truncated_two_byte_prefix_at_eof():
+    # Lone prefix at the very end (no sub byte to consume) shouldn't crash.
+    assert tokens_to_ascii(bytes([0x5D])) == "?"
+    assert tokens_to_ascii(bytes([0x41, 0x5D])) == "A?"
