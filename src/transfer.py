@@ -8,7 +8,7 @@ import time
 import wire
 from wire import idle, read
 from packet import (
-    ACK, CTS, DATA, DEL, EOT, REQ, RTS, SKIP, VAR,
+    ACK, CTS, DATA, DEL, EOT, RDY, REQ, RTS, SKIP, VAR,
     pc_id_for, packet_bytes, send_packet, recv_packet, hex_bytes,
 )
 from vartypes import (
@@ -66,6 +66,133 @@ def recv_var(timeout_ms=10000):
     if cmd4 != EOT: print("expected EOT, got", hex(cmd4))
 
     return (bytes(hdr), bytes(data))
+
+
+def _finish_recv_after_first_pkt(machine, cmd, hdr, timeout_ms=10000):
+    """Continue the silent-link receive flow after the first packet (RTS or
+    VAR) has already been read. Shared between `recv_var` (one-shot) and
+    `listen_loop` (long-lived). Returns (header_bytes, data_bytes) or None."""
+    pc_machine = pc_id_for(machine)
+    if cmd not in (RTS, VAR):
+        print("unexpected cmd", hex(cmd))
+        return None
+
+    if not send_packet(ACK, machine=pc_machine):
+        print("ACK send failed"); return None
+    if not send_packet(CTS, machine=pc_machine):
+        print("CTS send failed"); return None
+
+    p = recv_packet(timeout_ms)
+    if p is None: print("no ACK after CTS"); return None
+    _, cmd2, _ = p
+    if cmd2 != ACK:
+        print("expected ACK, got", hex(cmd2)); return None
+
+    p = recv_packet(timeout_ms)
+    if p is None: print("no DATA"); return None
+    _, cmd3, data = p
+    if cmd3 != DATA:
+        print("expected DATA, got", hex(cmd3)); return None
+
+    if not send_packet(ACK, machine=pc_machine):
+        print("final ACK failed"); return None
+
+    # Drain optional EOT. Real TI-82 protocol omits it; an 84+ in compat
+    # mode (machine=0x82 wire ID) sends one anyway. Try briefly either way
+    # so the next loop iteration doesn't see it as garbage.
+    p = recv_packet(500)
+    if p is not None:
+        _, cmd4, _ = p
+        if cmd4 != EOT:
+            print("trailing pkt was", hex(cmd4), "not EOT")
+    return (bytes(hdr), bytes(data))
+
+
+def listen_loop(name=None, expected_type=None, on_var=None, timeout_ms=0):
+    """Sit on the wire and accept calc-initiated transfers in a loop.
+
+    For each accepted variable, calls on_var(type_id, name8, header, data) if
+    provided; otherwise prints a hex summary plus an ASCII decode. Filters by
+    `name` (8-byte field, or shorter str -- zero-padded) and `expected_type`
+    when set. Handles RDY (0x68) by ACKing so the calc believes a partner is
+    on the line; handles unexpected first-packet cmds by ACKing and looping.
+
+    timeout_ms=0 means wait forever for the first packet; set nonzero to
+    return after that long with no traffic."""
+    if isinstance(name, str):
+        name8 = name.encode("ascii") + b'\x00' * (8 - len(name))
+    elif name is None:
+        name8 = None
+    else:
+        name8 = bytes(name)
+        if len(name8) != 8:
+            raise ValueError("name must be 8 bytes or a <=8-char str")
+
+    print("listen_loop: filter name=", name8, "type=",
+          hex(expected_type) if expected_type is not None else None)
+    while True:
+        idle()
+        p = recv_packet(timeout_ms if timeout_ms else 60000)
+        if p is None:
+            if timeout_ms:
+                print("listen_loop: no traffic, returning")
+                return
+            continue
+        machine, cmd, body = p
+        pc_machine = pc_id_for(machine)
+
+        if cmd == RDY:
+            # Calc is asking "are you there?" before sending. ACK keeps it talking.
+            print("RDY from", hex(machine), "-> ACK")
+            send_packet(ACK, machine=pc_machine)
+            continue
+
+        if cmd not in (RTS, VAR):
+            # Unknown opener. ACK so the calc doesn't hang, then loop.
+            print("listen: unexpected first cmd", hex(cmd), "-> ACK and continue")
+            send_packet(ACK, machine=pc_machine)
+            continue
+
+        print("incoming: machine=", hex(machine), "cmd=", hex(cmd),
+              "hdr_len=", len(body))
+        result = _finish_recv_after_first_pkt(machine, cmd, body)
+        if result is None:
+            continue
+        hdr, data = result
+
+        # 83+/84+ var header: [size_lo, size_hi, type, name(8), ver, flags]
+        # TI-82 form: [size_lo, size_hi, type, name(8)]
+        if len(hdr) < 11:
+            print("listen: short header, skipping"); continue
+        got_type = hdr[2]
+        got_name = bytes(hdr[3:11])
+
+        if expected_type is not None and got_type != expected_type:
+            print("listen: type", hex(got_type), "!= expected", hex(expected_type),
+                  "-- skipping")
+            continue
+        if name8 is not None and got_name != name8:
+            print("listen: name", got_name, "!= expected", name8, "-- skipping")
+            continue
+
+        if on_var is not None:
+            on_var(got_type, got_name, hdr, data)
+        else:
+            # AppVar (0x15) and Program (0x05/0x06) bodies on the wire are
+            # [size_le16][bytes]. Strip the prefix so the display shows the
+            # caller-visible payload, not the framing.
+            payload = data
+            if got_type in (0x05, 0x06, 0x15) and len(data) >= 2:
+                declared = data[0] | (data[1] << 8)
+                if declared == len(data) - 2:
+                    payload = data[2:]
+            try:
+                ascii_view = payload.decode("ascii")
+            except Exception:
+                ascii_view = repr(bytes(payload))
+            stripped = bytes(got_name).rstrip(b'\x00')
+            print("RECV type=", hex(got_type), "name=", stripped,
+                  "len=", len(payload), "ascii=", repr(ascii_view))
 
 
 def req_var(type_id, name8, calc_machine=0x82, timeout_ms=5000):

@@ -1,11 +1,10 @@
-; CHAT.z80: chat-UI stub. Reads keys via _GetKey, displays the running
-; input line, and clears on [ENTER] (we'll wire the DBUS send next).
-; [CLEAR] exits back to the OS.
+; CHAT.z80: chat-UI stub. Reads keys via _GetKey (which on the 84+ returns
+; resolved kKey codes, including alpha-shifted letters), accumulates a
+; line on row 7, redraws on every keystroke. [DEL] backspaces, [ENTER]
+; clears the line (DBUS send goes here next), [CLEAR] exits.
 ;
-; Build:
-;   just asm programs/asm_chat/CHAT.z80
-; Push:
-;   just push-asm programs/asm_chat/CHAT.z80
+; Build:  just asm  programs/asm_chat/CHAT.z80
+; Push:   just push-asm programs/asm_chat/CHAT.z80
 
 .nolist
 #include "ti83plus.inc"
@@ -14,7 +13,7 @@
 .org    $9D93
 .db     t2ByteTok, tAsmCmp
 
-BUFMAX  .equ    64              ; max chars per line before forced flush
+BUFMAX  .equ    64
 
         bcall(_ClrLCDFull)
         ld      hl, 0
@@ -23,28 +22,28 @@ BUFMAX  .equ    64              ; max chars per line before forced flush
         bcall(_PutS)
         bcall(_NewLine)
 
-        ld      a, 0
+        xor     a
         ld      (buflen), a
+        ld      hl, buf
+        ld      (hl), 0
 
 input_loop:
-        bcall(_GetKey)           ; A = key code (skKey* equates)
-        cp      skClear
-        jr      z, done
-        cp      skEnter
+        bcall(_GetKey)
+        cp      kClear
+        jp      z, done
+        cp      kEnter
         jr      z, on_enter
-        cp      skDel
+        cp      kDel
         jr      z, on_del
 
-        ; Map A to a printable ASCII char (0 if not mapped).
         call    key_to_ascii
         or      a
-        jr      z, input_loop    ; unmapped -> ignore
+        jr      z, input_loop
 
-        ; Append to buffer if room.
         ld      b, a
         ld      a, (buflen)
         cp      BUFMAX
-        jr      nc, input_loop   ; full -> ignore until enter
+        jr      nc, input_loop
         ld      hl, buf
         ld      e, a
         ld      d, 0
@@ -52,10 +51,8 @@ input_loop:
         ld      (hl), b
         inc     a
         ld      (buflen), a
-        ; Null-terminate so PutS works.
         inc     hl
         ld      (hl), 0
-
         call    redraw_line
         jr      input_loop
 
@@ -74,52 +71,131 @@ on_del:
         jr      input_loop
 
 on_enter:
-        ; TODO: ship (buf, buflen) over DBUS to the Pico.
-        ; For now, just clear the line and keep going.
-        ld      a, 0
+        ld      a, (buflen)
+        or      a
+        jr      z, _enter_clear     ; empty line: just clear, no send
+
+        ; Build OP1 = [AppVarObj, 'C','H','A','T','M','S','G', 0]
+        ld      hl, op1_appvar_name
+        rst     rMOV9TOOP1
+
+        ; If CHATMSG already exists, delete so _CreateAppVar gets a clean
+        ; slot. _ChkFindSym: cf=0 if found, cf=1 if not.
+        bcall(_ChkFindSym)
+        jr      c, _enter_create
+        bcall(_DelVarArc)
+
+_enter_create:
+        ; OP1 may have been clobbered by lookup/delete; reload.
+        ld      hl, op1_appvar_name
+        rst     rMOV9TOOP1
+        ld      a, (buflen)
+        ld      l, a
+        ld      h, 0
+        bcall(_CreateAppVar)        ; HL=size; out: DE -> [size_lo,size_hi,data]
+        jr      c, _enter_err
+
+        ; Copy (buf, buflen) into the var's data area, past the 2-byte size word.
+        inc     de
+        inc     de
+        ld      hl, buf
+        ld      a, (buflen)
+        ld      c, a
+        ld      b, 0
+        ldir
+
+        ; Reload OP1 (silent send may have clobbered it during lookup).
+        ld      hl, op1_appvar_name
+        rst     rMOV9TOOP1
+        bcall(_SendVarCmd)
+        jr      c, _enter_err
+        jr      _enter_clear
+
+_enter_err:
+        ; Mark failure with an "X" at row 0, col 15.
+        ld      hl, $0F00            ; curRow=0 (L), curCol=15 (H)
+        ld      (curRow), hl
+        ld      a, 'X'
+        bcall(_PutC)
+
+_enter_clear:
+        xor     a
         ld      (buflen), a
         ld      hl, buf
         ld      (hl), 0
         call    redraw_line
-        jr      input_loop
+        jp      input_loop
 
 done:
         bcall(_ClrLCDFull)
         ret
 
-; Redraw the bottom-of-screen input line. Clears row 7, then PutS the buffer.
+; Redraw the input line at row 7.
 redraw_line:
-        ld      hl, $0007        ; row=7, col=0  (curRow=hi? on 83+ curRow is at row 0..7, but layout is curRow,curCol)
+        ld      hl, $0007        ; curRow=7, curCol=0 (curRow=L, curCol=H)
         ld      (curRow), hl
         bcall(_EraseEOL)
         ld      hl, buf
         bcall(_PutS)
         ret
 
-; key_to_ascii: A in = skKey* code, A out = ASCII char or 0 if unmapped.
-; Minimal coverage for now: digits + space + decimal point. Letters need
-; the alpha-shift state machine, which we can layer on later.
+; key_to_ascii: A in = kKey* code (post-alpha resolution by _GetKey),
+; A out = ASCII char or 0 if unmapped.
+;
+; kCapA..kCapZ are contiguous (0x9A..0xB3), so we range-check and
+; subtract. Digits and punctuation come through a small lookup table.
 key_to_ascii:
-        cp      skSpace
-        jr      nz, _k1
-        ld      a, ' '
-        ret
-_k1:    cp      skDecPnt
-        jr      nz, _k2
-        ld      a, '.'
-        ret
-_k2:    cp      sk0
-        jr      c, _knone
-        cp      sk9 + 1
-        jr      nc, _knone
-        ; sk0..sk9 are contiguous in skKey order: 0,1,2,...,9
-        sub     sk0
-        add     a, '0'
-        ret
-_knone: xor     a
+        ; Letters first: kCapA (0x9A) <= A <= kCapZ (0xB3) -> 'A'..'Z'.
+        cp      kCapA
+        jr      c, _ka_table
+        cp      kCapZ + 1
+        jr      nc, _ka_table
+        sub     kCapA
+        add     a, 'A'
         ret
 
+_ka_table:
+        ld      c, a
+        ld      hl, key_table
+_kt_next:
+        ld      a, (hl)
+        or      a
+        ret     z
+        cp      c
+        jr      z, _kt_hit
+        inc     hl
+        inc     hl
+        jr      _kt_next
+_kt_hit:
+        inc     hl
+        ld      a, (hl)
+        ret
+
+key_table:
+        .db     k0,       '0'
+        .db     k1,       '1'
+        .db     k2,       '2'
+        .db     k3,       '3'
+        .db     k4,       '4'
+        .db     k5,       '5'
+        .db     k6,       '6'
+        .db     k7,       '7'
+        .db     k8,       '8'
+        .db     k9,       '9'
+        .db     kDecPnt,  '.'
+        .db     kAdd,     '+'
+        .db     kSub,     '-'
+        .db     kMul,     '*'
+        .db     kDiv,     '/'
+        .db     kLParen,  '('
+        .db     kRParen,  ')'
+        .db     kComma,   ','
+        .db     kSpace,   ' '
+        .db     0
+
 banner: .db     "asm_chat", 0
+op1_appvar_name:
+        .db     AppVarObj, "CHATMSG", 0
 buf:    .db     0
         .fill   BUFMAX, 0
 buflen: .db     0

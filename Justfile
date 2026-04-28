@@ -69,6 +69,16 @@ push FILE="programs/flappy_bird/FLAPPY.8xp":
     @echo "==> running on Pico"
     {{MPR}} run /tmp/ti84_e2e_push.py
 
+# Listen on the Pico for a calc-initiated variable transfer. NAME filters
+# by 8-byte var name (e.g. CHATMSG); TYPE filters by hex type byte (e.g. 15
+# for AppVar). Both optional. Ctrl-C to stop.
+# Example: just listen CHATMSG 15
+listen NAME="" TYPE="":
+    @echo "==> generating listen script (name={{NAME}} type={{TYPE}})"
+    {{PY}} tools/build_e2e.py listen {{NAME}} {{TYPE}} > /tmp/ti84_e2e_listen.py
+    @echo "==> running on Pico (Ctrl-C to stop)"
+    {{MPR}} run /tmp/ti84_e2e_listen.py
+
 # Push a .8Xp, then request it back and byte-compare on the Pico.
 roundtrip FILE="programs/flappy_bird/FLAPPY.8xp":
     @echo "==> generating roundtrip script for {{FILE}}"
