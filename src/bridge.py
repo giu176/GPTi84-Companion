@@ -14,7 +14,7 @@ States (onboard LED on machine.Pin("LED")):
 Blink is cooperative: ticked between DBUS packets. A long DBUS transfer
 freezes the LED, which is informative -- the thing is busy on the wire.
 
-Direction model (Str1=text + Str2=math + Str0=reply pivot):
+Direction model (Str1=text + Str2=math + Str3..Str0=paginated reply):
   calc -> Pico   : asm program _SendVarCmds Str1 (text/prompt) and Str2
                    (math/equation) to us back-to-back. on_var sees each
                    String var (type 0x04, name [0xAA, slot, 0...]),
@@ -23,21 +23,32 @@ Direction model (Str1=text + Str2=math + Str0=reply pivot):
                    timeout elapses with only one). Str1 decodes in 'text'
                    mode (no implicit-mult between letters); Str2 decodes
                    in 'math' mode (full implicit-mult, 2X -> 2*X).
-  Pico -> calc   : when a desktop frame arrives, translate ASCII back to
-                   tokens and PC-master push as Str0. Calc must be at
-                   the home screen for the OS's idle silent-link receive
-                   to accept it; the asm program exits immediately after
-                   sending so the calc is back at the home screen by the
-                   time the desktop reply round-trips.
+  Pico -> calc   : the desktop reply is a paginated body shaped:
+                       pages:N\n<page1>\x00<page2>\x00...<pageN>
+                   We push each page as a separate Str (page 1 -> Str3,
+                   page 2 -> Str4, ..., page 8 -> Str0), then push the
+                   page count N as real var N. The BASIC deck pre-sets
+                   N=0 and busy-waits on N>0 to detect reply-ready, then
+                   runs an arrow-key pager. Calc must be at the home
+                   screen between pushes for the OS's idle silent-link
+                   receive to accept each one; the asm exits to home
+                   immediately so the deck is parked there.
 
 User UX: a TI-BASIC "deck" program owns the GUI -- it sets up Str1 and
-Str2, calls Asm(prgmCHAT), and reads Str0. The asm stays a one-shot
-dumb pipe: send Str1, send Str2, exit.
+Str2, zeroes N, calls Asm(prgmCHAT), waits for N>0, then pages through
+Str3..Str(2+min(N,7))[+Str0 for page 8] under arrow-key control. The
+asm stays a one-shot dumb pipe: send Str1, send Str2, exit.
 
-Combined frame format: two lines, newline-separated.
+Combined frame format (calc -> desktop): two lines, newline-separated.
   prompt:<text from Str1>\n
   math:<text from Str2>\n
 Either line's value may be empty (when that slot was an empty Str).
+
+Reply frame format (desktop -> calc): one header line then NUL-joined
+page bodies.
+  pages:N\n<page1>\x00<page2>\x00...<pageN>
+N is 1..8. Each page body is ASCII, already clamped by the relay to
+PAGE_CHARS chars (the screen-fittable budget).
 
 Why PC-master push and not calc-master REQ: every variant of calc-as-
 master receive we tried (_GetSmallPacket, _GetVariableData inside the
@@ -53,7 +64,9 @@ import machine
 import net
 import tokens
 import transfer
-from vartypes import T_STRING, str_name
+from vartypes import (
+    T_REAL, T_STRING, encode_real, real_name, str_name,
+)
 
 
 LED = machine.Pin("LED", machine.Pin.OUT)
@@ -121,9 +134,27 @@ def _wifi_with_retry():
             backoff = min(backoff * 2, 30)
 
 
-STR0_NAME = str_name(0)
 STR_SLOT_TEXT = 0x00  # Str1 sub-byte (user-visible 1, table index 0) -- prose
 STR_SLOT_MATH = 0x01  # Str2 sub-byte                                 -- equation
+
+# Page-routing slots, in order: page 1 -> Str3, ..., page 8 -> Str0.
+# Matches str_name() output (a name field of [0xAA, slot, 0,0,0,0,0,0])
+# so the deck can address them as Str(2+P) for P=1..7 and Str0 for P=8.
+PAGE_STR_NAMES = [
+    str_name(3),  # page 1
+    str_name(4),  # page 2
+    str_name(5),  # page 3
+    str_name(6),  # page 4
+    str_name(7),  # page 5
+    str_name(8),  # page 6
+    str_name(9),  # page 7
+    str_name(0),  # page 8 (Str0 is index 9 internally)
+]
+MAX_PAGES = len(PAGE_STR_NAMES)
+
+# Real var the deck reads to learn how many pages arrived. Deck pre-sets
+# 0->N before calling CHAT, then `Repeat N>0` until we push the count.
+PAGECOUNT_NAME = real_name("N")
 
 # How long to wait for the second half of a Str1/Str2 pair before
 # flushing what we have. The asm sends Str1 and Str2 back-to-back, but
@@ -156,24 +187,100 @@ def _ascii_to_str_payload(text):
     return bytes([len(body) & 0xFF, (len(body) >> 8) & 0xFF]) + body
 
 
-def _push_str0(frame):
-    """PC-master push of an inbound desktop frame to the calc as Str0.
-    Frame is treated as ASCII text. Returns True on success."""
-    # Coerce bytes -> printable-ASCII str without relying on the
-    # `errors=` kwarg (MicroPython's decode() doesn't accept it).
-    text = "".join(chr(b) if 0x20 <= b < 0x7F else "?" for b in bytes(frame))
+def _bytes_to_ascii(data):
+    """Coerce bytes-like to printable-ASCII str without relying on
+    decode(errors=...) -- MicroPython's decode() doesn't accept kwargs."""
+    return "".join(chr(b) if 0x20 <= b < 0x7F else "?" for b in bytes(data))
+
+
+def _parse_pages_frame(frame):
+    """Return list[str] of page bodies parsed from a desktop reply frame.
+
+    Frame shape:
+        pages:N\n<page1>\x00<page2>\x00...<pageN>
+    Tolerates a missing header (legacy single-string replies) by
+    returning a one-element list."""
+    data = bytes(frame)
+    if data.startswith(b"pages:"):
+        nl = data.find(b"\n")
+        if nl == -1:
+            return [_bytes_to_ascii(data)]
+        try:
+            n = int(data[6:nl])
+        except ValueError:
+            n = 0
+        body = data[nl + 1:]
+        # Always split on NUL even if N is wrong -- the wire is the
+        # source of truth for how many pages we actually got.
+        chunks = body.split(b"\x00") if body else []
+        pages = [_bytes_to_ascii(c) for c in chunks]
+        if n and len(pages) != n:
+            print("bridge: page-count mismatch: header N=", n,
+                  "but parsed", len(pages), "chunks")
+        return pages or [""]
+    # Legacy / non-paginated reply: treat as one page.
+    return [_bytes_to_ascii(data)]
+
+
+def _push_one_str(name8, text, label):
+    """PC-master push of a single Str to the calc. Returns True on success."""
     wire = _ascii_to_str_payload(text)
-    print("bridge: pushing Str0 to calc (", len(wire), "wire bytes,",
-          len(text), "chars,", repr(text[:INMAX_CHARS]), ")")
+    print("bridge: pushing", label, "to calc (",
+          len(wire), "wire bytes,", len(text), "chars,",
+          repr(text[:INMAX_CHARS]), ")")
     try:
-        ok = transfer.send_var(T_STRING, STR0_NAME, wire,
+        ok = transfer.send_var(T_STRING, name8, wire,
                                calc_machine=0x73, quiet=True)
     except Exception as e:
         print("bridge: send_var raised:", e)
         return False
     if not ok:
-        print("bridge: send_var returned False (calc not at home screen?)")
+        print("bridge:", label, "send_var returned False "
+              "(calc not at home screen?)")
     return ok
+
+
+def _push_pagecount(n):
+    """PC-master push of real var N=<page count>. Deck busy-waits on
+    N>0 to know the paginated reply is ready. Pushed AFTER all pages
+    so partial state is never observable."""
+    try:
+        ok = transfer.send_var(T_REAL, PAGECOUNT_NAME, encode_real(n),
+                               calc_machine=0x73, quiet=True)
+    except Exception as e:
+        print("bridge: pagecount send_var raised:", e)
+        return False
+    if not ok:
+        print("bridge: pagecount send_var returned False")
+    return ok
+
+
+def _push_paginated_reply(frame):
+    """Parse a desktop reply frame and push its pages to Str3..Str0,
+    then signal completion by pushing the page count to real var N.
+
+    Each push needs SETTLE_MS of wallclock between it and the previous
+    OS-level redraw event (asm unwind, prior push acceptance) so the
+    OS idle silent-link receive is rearmed. Returns True iff every
+    page AND the count made it across."""
+    pages = _parse_pages_frame(frame)
+    if not pages:
+        print("bridge: empty pages list, nothing to push")
+        return False
+    pages = pages[:MAX_PAGES]
+    n = len(pages)
+    print("bridge: pushing", n, "page(s) to calc")
+    for i, page in enumerate(pages):
+        time.sleep_ms(SETTLE_MS)
+        label = "page %d/%d (Str slot)" % (i + 1, n)
+        if not _push_one_str(PAGE_STR_NAMES[i], page, label):
+            print("bridge: aborting paginated push at page", i + 1)
+            return False
+    time.sleep_ms(SETTLE_MS)
+    print("bridge: all pages pushed; setting N=", n)
+    if not _push_pagecount(n):
+        return False
+    return True
 
 
 def _emit_pair(sock_holder, prompt_text, math_text):
@@ -340,8 +447,9 @@ def run(name=None, expected_type=None):
                 if inbound is None:
                     break
                 _flash()
-                time.sleep_ms(SETTLE_MS)
-                _push_str0(inbound)
+                # _push_paginated_reply handles per-push settle timing
+                # internally (one SETTLE_MS gap before each Str + N).
+                _push_paginated_reply(inbound)
         except KeyboardInterrupt:
             print("bridge: interrupted")
             try:

@@ -33,16 +33,42 @@ KEYWORDS = [
     # references/other_projects/spasm/ti83plus.inc 'tasm equ 6Ah' in
     # the 2-byte token table at line 4761.
     ("Asm(",     bytes([0xBB, 0x6A])),
-    # Single-byte command tokens. Bytes verified against
-    # references/other_projects/linkguide/ti83+/tokens.html (row x col
-    # gives byte 0xRC). ClrHome is row E col 1 = 0xE1, NOT 0xE3
-    # (0xE3 is SortA() -- that mistake produced an "Invalid" error
-    # at deck-load time on the calc.
+    # Two-char comparison operators. Must come before '<' / '>' /
+    # '=' single-char punctuation so longest-match wins.
+    ("<=",       bytes([0x6D])),
+    (">=",       bytes([0x6E])),
+    ("!=",       bytes([0x6F])),
+    # Control-flow keywords. Note many include a trailing space in
+    # their on-screen glyph (e.g. 'Repeat '); the calc tokens are
+    # single-byte regardless. Match the bare keyword and let the
+    # scanner's whitespace-skip handle the gap to the next token.
     ("ClrHome",  bytes([0xE1])),
     ("Input",    bytes([0xDC])),
     ("Pause",    bytes([0xD8])),
     ("Disp",     bytes([0xDE])),
     ("prgm",     bytes([0x5F])),
+    ("Repeat",   bytes([0xD2])),
+    ("While",    bytes([0xD1])),
+    ("Return",   bytes([0xD5])),
+    ("Then",     bytes([0xCF])),
+    ("Else",     bytes([0xD0])),
+    ("Stop",     bytes([0xD9])),
+    ("Goto",     bytes([0xD7])),
+    ("Lbl",      bytes([0xD6])),
+    ("End",      bytes([0xD4])),
+    ("If",       bytes([0xCE])),
+    # Output( is a single-byte 0xE0 keyword (the '(' is part of the
+    # glyph, not a separate token). Place before any rule that would
+    # split it as 'Output' + '('.
+    ("Output(",  bytes([0xE0])),
+    ("getKey",   bytes([0xAD])),
+    # Boolean ops. Must come before letter-by-letter encoding so the
+    # scanner sees them as single tokens. The on-calc forms are
+    # ' or ', ' xor ', ' and ' (with surrounding spaces in the glyph);
+    # we match the bare word and rely on whitespace-skip on either side.
+    ("or",       bytes([0x3C])),
+    ("xor",      bytes([0x3D])),
+    ("and",      bytes([0x40])),
     # System string vars: 'StrN' encodes as [tVarStrng=0xAA, sub-byte].
     # Str1=0x00 .. Str9=0x08, Str0=0x09 (Str0 is index 9, not 0).
     ("Str1",     bytes([0xAA, 0x00])),

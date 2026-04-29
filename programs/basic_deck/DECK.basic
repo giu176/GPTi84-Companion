@@ -3,6 +3,40 @@ Disp "PROMPT?
 Input Str1
 Disp "MATH?
 Input Str2
+0->N
 Asm(prgmCHAT)
-Pause
+Disp "WAITING...
+Pause N
+1->P
+Lbl A
+ClrHome
+If P=1
+Disp Str3
+If P=2
+Disp Str4
+If P=3
+Disp Str5
+If P=4
+Disp Str6
+If P=5
+Disp Str7
+If P=6
+Disp Str8
+If P=7
+Disp Str9
+If P=8
 Disp Str0
+Output(8,1,P
+Output(8,2,"/
+Output(8,3,N
+Output(8,13,"<>
+Repeat K=24 or K=26 or K=45
+getKey->K
+End
+If K=24 and P>1
+P-1->P
+If K=26 and P<N
+P+1->P
+If K=45
+Return
+Goto A

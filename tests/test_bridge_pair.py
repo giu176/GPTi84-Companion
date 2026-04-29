@@ -263,3 +263,41 @@ def test_emits_drop_silently_when_socket_down(monkeypatch):
     # Nothing reached the captor (because the captor checks sock identity
     # and we never called net.send_framed with a real socket).
     assert fake.sends == []
+
+
+# ---- Paginated reply parsing ----
+
+def test_parse_pages_frame_single_page():
+    pages = bridge._parse_pages_frame(b"pages:1\nHELLO")
+    assert pages == ["HELLO"]
+
+
+def test_parse_pages_frame_multi_page():
+    pages = bridge._parse_pages_frame(b"pages:3\nONE\x00TWO\x00THREE")
+    assert pages == ["ONE", "TWO", "THREE"]
+
+
+def test_parse_pages_frame_empty_pages_allowed():
+    # An empty page slot is legal; the relay may emit "" for stylistic
+    # blank pages. NUL split must preserve them.
+    pages = bridge._parse_pages_frame(b"pages:3\nA\x00\x00C")
+    assert pages == ["A", "", "C"]
+
+
+def test_parse_pages_frame_legacy_no_header():
+    # Backwards compat: older relay shape was a single ASCII string.
+    pages = bridge._parse_pages_frame(b"plain text reply")
+    assert pages == ["plain text reply"]
+
+
+def test_parse_pages_frame_non_ascii_replaced():
+    # Bytes outside printable ASCII become '?', no exceptions.
+    pages = bridge._parse_pages_frame(b"pages:1\nA\xffB")
+    assert pages == ["A?B"]
+
+
+def test_parse_pages_frame_count_mismatch_uses_wire_truth():
+    # Header says 5 pages but only 2 NUL-separated chunks present;
+    # we trust the wire and return what we parsed.
+    pages = bridge._parse_pages_frame(b"pages:5\nALPHA\x00BETA")
+    assert pages == ["ALPHA", "BETA"]

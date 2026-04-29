@@ -8,10 +8,13 @@ Reverse direction (three modes):
             v0 stub for "ChatGPT on the calc": proves the calc-as-master
             REQ/response architecture without an LLM in the loop.
   --llm   : parse the bridge's 'prompt:...\\nmath:...\\n' frame, send
-            it to Ollama (cloud or local) with a JSON-schema format,
-            ASCII-clamp to STR0_MAX_CHARS, ship back framed. Per-frame
-            worker thread so a slow model call doesn't stall reads.
-            Env: OLLAMA_URL, OLLAMA_MODEL, OLLAMA_API_KEY.
+            it to Ollama (cloud or local) with a JSON-schema format
+            asking for a paginated reply (1..MAX_PAGES pages, each up
+            to PAGE_CHARS chars), ASCII-clamp, ship back as a single
+            framed body shaped:
+                pages:N\\n<page1>\\x00<page2>\\x00...<pageN>
+            Per-frame worker thread so a slow model call doesn't stall
+            reads. Env: OLLAMA_URL, OLLAMA_MODEL, OLLAMA_API_KEY.
   default : lines typed on stdin are shipped to the latest client.
 """
 
@@ -64,9 +67,15 @@ _echo_mode = False
 _llm_mode = False
 
 
-# Must match src/bridge.py:INMAX_CHARS. The Pico further clamps before
-# tokenizing into Str0, so going over here just wastes round-trip bytes.
-STR0_MAX_CHARS = 128
+# Screen geometry. The TI-84 Plus homescreen is 16 cols x 8 rows in
+# large font. Row 8 is reserved for the BASIC pager UI ("1/4  < >"),
+# leaving 16x7=112 chars per page of body text. MAX_PAGES is bounded
+# by how many Str slots we can route into on the calc side: Str3..Str9
+# plus Str0 = 8 slots. Str1 and Str2 are user-input reserved.
+PAGE_COLS = 16
+PAGE_ROWS = 7
+PAGE_CHARS = PAGE_COLS * PAGE_ROWS  # 112
+MAX_PAGES = 8
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "https://ollama.com/api/chat")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gpt-oss:120b-cloud")
@@ -75,14 +84,35 @@ OLLAMA_TIMEOUT_S = 25
 
 _REPLY_SCHEMA = {
     "type": "object",
-    "properties": {"reply": {"type": "string"}},
-    "required": ["reply"],
+    "properties": {
+        "pages": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": MAX_PAGES,
+            "items": {"type": "string", "maxLength": PAGE_CHARS},
+        },
+    },
+    "required": ["pages"],
 }
 
 _SYSTEM_PROMPT = (
-    "You are a helper running on a TI-84 Plus calculator. "
-    "Reply in plain ASCII only (no unicode, no markdown, no code fences). "
-    "Keep replies under " + str(STR0_MAX_CHARS) + " characters total. "
+    "You are a helper running on a TI-84 Plus calculator. The user "
+    "flips through your reply with the calculator's left/right arrow "
+    "keys, one screenful at a time. The screen shows "
+    + str(PAGE_COLS) + " columns by " + str(PAGE_ROWS) + " rows of "
+    "large-font text.\n"
+    "Output rules:\n"
+    " - Plain ASCII only. No unicode, no markdown, no code fences.\n"
+    " - Each page is at most " + str(PAGE_CHARS) + " characters.\n"
+    " - Hard-wrap each line at " + str(PAGE_COLS) + " columns. Insert "
+    "a literal newline ('\\n') where you want a line break. Do not "
+    "break a word mid-letter unless the single token is longer than "
+    + str(PAGE_COLS) + " characters.\n"
+    " - Use up to " + str(MAX_PAGES) + " pages. Use as few as the "
+    "answer needs. A short answer should be a single page. Do not "
+    "pad pages with blank lines to look fuller.\n"
+    " - Keep semantically related content (a code block, a table row, "
+    "a list item) on the same page when it fits.\n"
     "If the user provided a 'math' field, treat it as a TI-BASIC-style "
     "expression and incorporate it into your answer."
 )
@@ -108,6 +138,8 @@ def _ascii_clamp(s, n):
 
 
 def _call_ollama(prompt, math):
+    """Returns a list[str] of pages (1..MAX_PAGES). Raises on transport
+    or decode failure; caller wraps to a one-page error reply."""
     user = "prompt: " + prompt + "\nmath: " + math
     body = {
         "model": OLLAMA_MODEL,
@@ -133,22 +165,37 @@ def _call_ollama(prompt, math):
     content = resp.get("message", {}).get("content", "")
     try:
         obj = json.loads(content)
-        return str(obj.get("reply", "")).strip()
+        pages = obj.get("pages")
+        if isinstance(pages, list) and pages:
+            return [str(p) for p in pages]
+        # Older single-string shape, or no pages key: treat as one page.
+        reply = str(obj.get("reply", content)).strip()
+        return [reply] if reply else [""]
     except (ValueError, TypeError):
-        return content.strip()
+        return [content.strip()]
 
 
-def _llm_reply_bytes(text):
+def _llm_reply_pages(text):
+    """Build the framed multi-page body for one inbound prompt frame.
+    Format: 'pages:N\\n' + NUL-separated page bodies. Each page is
+    ASCII-clamped to PAGE_CHARS so the calc side never sees a page
+    that won't fit a Str."""
     prompt, math = _parse_pair(text)
     print("[%s] llm: prompt=%r math=%r" % (_now(), prompt[:80], math[:80]), flush=True)
     with _LLM_INFLIGHT:
         try:
-            reply = _call_ollama(prompt, math)
+            pages = _call_ollama(prompt, math)
         except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
             print("[%s] llm error: %s" % (_now(), e), flush=True)
-            reply = "err: " + str(e)[:60]
-    clamped = _ascii_clamp(reply, STR0_MAX_CHARS)
-    return clamped.encode("ascii", errors="replace")
+            pages = ["err: " + str(e)[:PAGE_CHARS - 5]]
+    pages = [_ascii_clamp(p, PAGE_CHARS) for p in pages[:MAX_PAGES]]
+    if not pages:
+        pages = [""]
+    print("[%s] llm: %d pages, sizes=%s" % (
+        _now(), len(pages), [len(p) for p in pages]), flush=True)
+    header = ("pages:" + str(len(pages)) + "\n").encode("ascii")
+    body = b"\x00".join(p.encode("ascii", errors="replace") for p in pages)
+    return header + body
 
 
 class FramedHandler(socketserver.BaseRequestHandler):
@@ -189,7 +236,7 @@ class FramedHandler(socketserver.BaseRequestHandler):
                     payload = text
 
                     def _worker():
-                        reply = _llm_reply_bytes(payload)
+                        reply = _llm_reply_pages(payload)
                         try:
                             sock.sendall(struct.pack(">I", len(reply)) + reply)
                             print("[%s] -> %s len=%d %r" % (_now(), peer_for_log, len(reply), reply), flush=True)
