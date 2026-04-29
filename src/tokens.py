@@ -146,13 +146,21 @@ for _ch in range(ord("0"), ord("9") + 1):
     _ASCII_TO_TOK[chr(_ch)] = _ch
 
 
+def _is_ascii_alnum(ch):
+    """str.isalnum() isn't available on stock MicroPython; the token decoder
+    only ever emits ASCII letters/digits, so an explicit range check is
+    both correct and portable."""
+    if not ch:
+        return False
+    c = ord(ch)
+    return (0x30 <= c <= 0x39) or (0x41 <= c <= 0x5A) or (0x61 <= c <= 0x7A)
+
+
 def _is_math_value_producer(ch):
     """Math-mode rule: last emitted char closes a value. Digits, letters, ')',
     or ']' (matrix tokens decode as '[MatA]' so the trailing bracket marks
     the end of a value). '^2'/'^3' postfixes end in a digit, already covered."""
-    if not ch:
-        return False
-    return ch.isalnum() or ch in (")", "]")
+    return _is_ascii_alnum(ch) or ch in (")", "]")
 
 
 def _is_text_value_producer(ch):
@@ -168,9 +176,7 @@ def _is_value_starter(ch):
     """First emitted char of a token opens a value -- needs '*' after a
     preceding value-producer. Digits, letters, '(' or '[' (matrix tokens
     decode as '[MatA]' so '[' opens a value just like '(' does)."""
-    if not ch:
-        return False
-    return ch.isalnum() or ch in ("(", "[")
+    return _is_ascii_alnum(ch) or ch in ("(", "[")
 
 
 def tokens_to_ascii(tok_bytes, mode="text"):

@@ -126,10 +126,13 @@ STR_SLOT_TEXT = 0x00  # Str1 sub-byte (user-visible 1, table index 0) -- prose
 STR_SLOT_MATH = 0x01  # Str2 sub-byte                                 -- equation
 
 # How long to wait for the second half of a Str1/Str2 pair before
-# flushing what we have. The asm sends both back-to-back, so 500ms is
-# generous; if the deck only populated one slot, the asm only sends
-# that one and we flush as a half-pair.
-PAIR_TIMEOUT_MS = 500
+# flushing what we have. The asm sends Str1 and Str2 back-to-back, but
+# each _SendVarCmd carries its own DBUS handshake; observed gap between
+# Str1's last ACK and Str2's first byte is variable and crossed 500ms
+# in real chats, splitting a real pair into two half-pairs. 2500ms is
+# comfortably wider than any clean send and only adds latency to the
+# single-slot path (deck only populated one of Str1/Str2).
+PAIR_TIMEOUT_MS = 2500
 
 # How long to wait after listen_loop returns before pushing Str0 back.
 # The calc OS needs wallclock time to unwind asm + redraw + rearm its

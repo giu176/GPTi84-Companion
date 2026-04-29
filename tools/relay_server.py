@@ -82,7 +82,11 @@ class FramedHandler(socketserver.BaseRequestHandler):
                 print("[%s] %s len=%d %s" % (_now(), peer, length, pretty), flush=True)
                 if _echo_mode and text is not None:
                     reply = ("echo: " + text).encode("ascii", errors="replace")
-                    _send_to_active(reply)
+                    try:
+                        self.request.sendall(struct.pack(">I", len(reply)) + reply)
+                        print("[%s] -> %s len=%d %r" % (_now(), peer, len(reply), reply), flush=True)
+                    except OSError as e:
+                        print("[%s] echo to %s failed: %s" % (_now(), peer, e), flush=True)
         finally:
             print("[%s] disconnected: %s" % (_now(), peer), flush=True)
             with _active_lock:
