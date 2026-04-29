@@ -93,6 +93,7 @@ Output(8,1,P
 Output(8,2,"/
 Output(8,3,N
 Output(8,13,"<>
+0->K
 Repeat K=24 or K=26 or K=45
 getKey->K
 End
