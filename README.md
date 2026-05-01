@@ -1,4 +1,4 @@
-# GPTi84+
+# GPTi84-Plus
 
 A TI-84 Plus that talks to a large language model.
 
