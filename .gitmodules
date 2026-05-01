@@ -1,6 +1,3 @@
 [submodule "references/other_projects/capnhook"]
 	path = references/other_projects/capnhook
 	url = https://github.com/commandz0/capnhook
-[submodule "firmware/doorscs7"]
-	path = firmware/doorscs7
-	url = git@github.com:KermMartian/Doors_CS_7.git
