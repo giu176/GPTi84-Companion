@@ -22,9 +22,6 @@
   kept around as worked examples
 - `tests/`: host-side tests for the framing layers (packet, variable
   headers, BASIC tokenizer, .8Xp extractor, bridge pairing logic).
-- `references/`: vendored protocol docs (TI Link Guide, WikiTI
-  mirrors, ArTICL, spasm-ng include files). Read these before
-  changing anything wire-level
 - `deploy/`: example systemd units for running
   the relay as a service on a Linux host
 
