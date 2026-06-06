@@ -12,46 +12,45 @@
 
 - `src/`: MicroPython sources for the Pico W. Bit-bang DBUS, packet
   layer, variable transfers, WebSocket-over-TLS client, and the
-  bridge supervisor.
+  bridge supervisor
 - `tools/`: host-side utilities. Relay server (echo / LLM / passthrough
   modes), TI-BASIC source-to-`.8Xp` tokenizer, `.8Xp` extractor, ad-hoc
-  push/listen scripts.
+  push/listen scripts
 - `programs/`: on-calculator code. `asm_chat/CHAT.z80` (the dumb pipe)
   and `basic_deck/DECK.basic` (the user-facing pager) are the two that
   matter for the chat UX. The other directories are bring-up artifacts
-  kept around as worked examples.
+  kept around as worked examples
 - `tests/`: host-side tests for the framing layers (packet, variable
   headers, BASIC tokenizer, .8Xp extractor, bridge pairing logic).
 - `references/`: vendored protocol docs (TI Link Guide, WikiTI
   mirrors, ArTICL, spasm-ng include files). Read these before
-  changing anything wire-level.
-- `deploy/`: example systemd units and a sudoers drop-in for running
-  the relay as a service on a Linux host. These are personal-deploy
-  reference: read them, don't blindly run them.
+  changing anything wire-level
+- `deploy/`: example systemd units for running
+  the relay as a service on a Linux host
 
 ## Hardware
 
-- TI-84 Plus (any 84+ family calculator with a 2.5mm link port).
-  Tested on plain 84+ (not Silver Edition, not CSE/CE).
+- TI-84 Plus (any 84+ family calculator with a 2.5mm link port)
+  Tested on plain 84+ (not Silver Edition, not CSE/CE)
 - Raspberry Pi Pico W. Wifi is required: the bridge connects out to a
-  TCP or WSS endpoint.
+  TCP or WSS endpoint
 - Cable: a 2.5mm TRS link cable wired to two Pico GPIOs and ground.
   Default pin mapping in `src/wire.py`: TIP -> GP6, RING -> GP7. Both
-  lines have internal pullups enabled.
+  lines have internal pullups enabled
 
 ## Quick start: LAN-only loop
 
 Goal: prove the wire works, with no public internet, no relay, no LLM.
 
 1. Wire up the Pico to the calculator's link port. Plug the Pico into
-   USB.
+   USB
 2. `cp src/secrets.py.example src/secrets.py` and fill in your wifi
    credentials. Leave `SERVER_WSS = False`. Set `SERVER_HOST` to your
-   workstation's LAN IP and `SERVER_PORT = 9999`.
+   workstation's LAN IP and `SERVER_PORT = 9999`
 3. Install MicroPython on the Pico, then `just sync` to copy `src/*.py`
-   onto the Pico's filesystem.
+   onto the Pico's filesystem
 4. On your workstation, run `just relay` to start the echo relay on
-   port 9999. Anything the calc sends gets echoed back.
+   port 9999. Anything the calc sends gets echoed back
 5. Build and push the on-calc programs:
    ```
    just push-asm   programs/asm_chat/CHAT.z80
@@ -72,14 +71,14 @@ Tunnel + Cloudflare Access, and proxies into Ollama (cloud or local).
    script with no dependencies beyond the stdlib + `urllib`. Run it
    under systemd (see `deploy/systemd/relay-llm.service` for a working
    unit) with `--port 9999 --llm` and the env vars from `.env.example`
-   set.
+   set
 2. Front it with Cloudflare Tunnel and create a Cloudflare Access
    service token. The token's `CF-Access-Client-Id` and
-   `CF-Access-Client-Secret` go into `src/secrets.py` on the Pico.
+   `CF-Access-Client-Secret` go into `src/secrets.py` on the Pico
 3. In `src/secrets.py`, set `SERVER_WSS = True`, `SERVER_HOST` to your
    Cloudflare hostname, `SERVER_PORT = 443`, `WS_PATH = "/ws"`, and the
-   two Access fields.
-4. `just sync` to push the new `secrets.py` to the Pico, then reset.
+   two Access fields
+4. `just sync` to push the new `secrets.py` to the Pico, then reset
 
 the bridge auto-connects on boot and exposes its state via the onboard
 LED (off / solid / 1Hz / 4Hz blink: see the docstring at the top of
@@ -97,11 +96,11 @@ The chat path uses two transfer directions:
 
 - **Calc -> Pico**: Z80 program (`CHAT.z80`) calls `_SendVarCmd` for
   Str1 (text) and Str2 (math). The Pico's listen loop receives them via
-  the standard RTS/CTS/DATA flow.
+  the standard RTS/CTS/DATA flow
 - **Pico -> Calc**: PC-master push of Str3..Str9, Str0 (reply pages),
   followed by real var N (page count). The calc must be at the home
   screen for the OS's idle silent-link receive to accept these. The asm
-  exits cleanly so the deck is parked there before the push starts.
+  exits cleanly so the deck is parked there before the push starts
 
 there is a settle delay (`SETTLE_MS` in `src/bridge.py`, default 600ms)
 between pushes: the OS needs wallclock to rearm the idle silent-link
