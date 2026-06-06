@@ -1,18 +1,6 @@
 # GPTi84-Plus
 
-A TI-84 Plus that talks to a large language model.
-
-![LLM reply rendered on the calculator's home screen](https://cdn.xandwr.com/cemetech/post-1/12_llm-reply-rendered.jpeg)
-
-You type a question on the calculator, hit `enter`, wait a couple of
-seconds, and page through the reply with the left/right arrow keys. No
-hardware mods, no firmware patch, no calculator side-loader: a stock
-84+ from any Walmart, an unmodified link cable, a Raspberry Pi Pico W
-in between, and a small relay process anywhere on the public internet.
-
-This repo is the full stack: the bit-bang DBUS implementation on the
-Pico, the WebSocket-over-TLS bridge, the relay server, and the on-calc
-TI-BASIC + Z80 programs that drive the UX.
+> a TI-84 Plus that talks to a large language model
 
 ```
 [ TI-84 Plus ] -- 2.5mm link cable --> [ Pico W ] --(WSS)--> [ relay ] --> [ Ollama / OpenAI / ... ]
@@ -50,8 +38,6 @@ TI-BASIC + Z80 programs that drive the UX.
 - Cable: a 2.5mm TRS link cable wired to two Pico GPIOs and ground.
   Default pin mapping in `src/wire.py`: TIP -> GP6, RING -> GP7. Both
   lines have internal pullups enabled.
-
-![Pico W on a breadboard wired to the calculator's link port](https://cdn.xandwr.com/cemetech/post-1/04_pico-breadboard-harness.jpeg)
 
 ## Quick start: LAN-only loop
 
@@ -95,16 +81,16 @@ Tunnel + Cloudflare Access, and proxies into Ollama (cloud or local).
    two Access fields.
 4. `just sync` to push the new `secrets.py` to the Pico, then reset.
 
-The bridge auto-connects on boot and exposes its state via the onboard
+the bridge auto-connects on boot and exposes its state via the onboard
 LED (off / solid / 1Hz / 4Hz blink: see the docstring at the top of
 `src/bridge.py`).
 
 ## On the wire
 
-The Pico talks DBUS (TI's silent-link protocol over the 2.5mm port) to
+the pico talks DBUS (TI's silent-link protocol over the 2.5mm port) to
 the calculator. The wire layer is a software bit-bang: idle is both
 lines high, sender pulls one line low to encode a bit, receiver
-acknowledges by pulling the other low. Bytes are LSB-first. Packets are
+acknowledges by pulling the other low. bytes are LSB-first. packets are
 `[machine_id][cmd][len_lo][len_hi][data...][cs_lo][cs_hi]`.
 
 The chat path uses two transfer directions:
@@ -117,17 +103,13 @@ The chat path uses two transfer directions:
   screen for the OS's idle silent-link receive to accept these. The asm
   exits cleanly so the deck is parked there before the push starts.
 
-There is a settle delay (`SETTLE_MS` in `src/bridge.py`, default 600ms)
+there is a settle delay (`SETTLE_MS` in `src/bridge.py`, default 600ms)
 between pushes: the OS needs wallclock to rearm the idle silent-link
 receive after each redraw.
 
-![Three Send({4,2,0}) Done lines on the calculator: the first proof-of-life round trip](https://cdn.xandwr.com/cemetech/post-1/06_send-420-done.png)
-
-The web console below tails every WebSocket frame the relay handles,
+web console below tails every WebSocket frame the relay handles,
 which made debugging the calc-to-LLM round trip vastly easier than
 guessing from one side of the wire at a time.
-
-![Web debug console showing live calc <-> relay frames](https://cdn.xandwr.com/cemetech/post-1/08_relay-console.png)
 
 ## Development
 
@@ -141,30 +123,6 @@ just relay-echo   # local TCP relay, auto-reply with "echo: <text>"
 just relay-llm    # local LLM relay, reads .env for OLLAMA_API_KEY
 ```
 
-The personal-deploy recipes (`deploy-relay-llm`, `bootstrap-agent-ssh`,
-`relay-llm-logs`, `sudoers-relay-deploy`) assume ssh aliases `nimble`
-and `nimble-agent`, an `agent` user account on the relay host, and a
-sudoers drop-in installed at `/etc/sudoers.d/xander-relay-deploy`.
-Read them as worked examples; substitute your own infrastructure.
-
-## Why does this exist
-
-The 84+ has a documented serial protocol (DBUS), a documented binary
-format for variables (.8Xp), an OS that politely accepts incoming
-variable pushes whenever the home screen is idle, and a built-in
-TI-BASIC interpreter that can render text, read string vars, and poll
-real vars in a loop. That's enough machinery to embed a network client
-behind it without modifying the calculator at all. The Pico fills in
-the missing pieces: a wifi stack, TLS, and the patience to bit-bang
-DBUS at the speed the OS expects.
-
-The result is a stock calculator that talks to GPT-class models. It is
-deeply impractical and that is the entire point.
-
 ## License
 
 MIT. See `LICENSE`.
-
-Vendored references in `references/` are third-party material. Each
-file or directory carries its source attribution; see the original
-projects (TI Link Guide, WikiTI, ArTICL, spasm-ng) for their licenses.
