@@ -38,52 +38,6 @@
   Default pin mapping in `src/wire.py`: TIP -> GP6, RING -> GP7. Both
   lines have internal pullups enabled
 
-## Quick start: LAN-only loop
-
-Goal: prove the wire works, with no public internet, no relay, no LLM.
-
-1. Wire up the Pico to the calculator's link port. Plug the Pico into
-   USB
-2. `cp src/secrets.py.example src/secrets.py` and fill in your wifi
-   credentials. Leave `SERVER_WSS = False`. Set `SERVER_HOST` to your
-   workstation's LAN IP and `SERVER_PORT = 9999`
-3. Install MicroPython on the Pico, then `just sync` to copy `src/*.py`
-   onto the Pico's filesystem
-4. On your workstation, run `just relay` to start the echo relay on
-   port 9999. Anything the calc sends gets echoed back
-5. Build and push the on-calc programs:
-   ```
-   just push-asm   programs/asm_chat/CHAT.z80
-   just push-basic programs/basic_deck/DECK.basic
-   ```
-6. On the calc, run `prgmDECK`. Type a prompt at the `PROMPT?` and
-   `MATH?` inputs. The deck calls `Asm(prgmCHAT)`, the asm ships
-   Str1+Str2 to the Pico, the relay echoes them back, the Pico
-   PC-master-pushes the reply into Str3..Str0, and the deck pages
-   through with left/right arrow keys.
-
-## Production loop (LLM via WSS)
-
-Same wiring, but the relay lives on a public host behind Cloudflare
-Tunnel + Cloudflare Access, and proxies into Ollama (cloud or local).
-
-1. Stand up the relay somewhere reachable. It's a single-file Python
-   script with no dependencies beyond the stdlib + `urllib`. Run it
-   under systemd (see `deploy/systemd/relay-llm.service` for a working
-   unit) with `--port 9999 --llm` and the env vars from `.env.example`
-   set
-2. Front it with Cloudflare Tunnel and create a Cloudflare Access
-   service token. The token's `CF-Access-Client-Id` and
-   `CF-Access-Client-Secret` go into `src/secrets.py` on the Pico
-3. In `src/secrets.py`, set `SERVER_WSS = True`, `SERVER_HOST` to your
-   Cloudflare hostname, `SERVER_PORT = 443`, `WS_PATH = "/ws"`, and the
-   two Access fields
-4. `just sync` to push the new `secrets.py` to the Pico, then reset
-
-the bridge auto-connects on boot and exposes its state via the onboard
-LED (off / solid / 1Hz / 4Hz blink: see the docstring at the top of
-`src/bridge.py`).
-
 ## On the wire
 
 the pico talks DBUS (TI's silent-link protocol over the 2.5mm port) to
