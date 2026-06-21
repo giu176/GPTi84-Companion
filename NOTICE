@@ -1,0 +1,9 @@
+TI-84 Companion includes and modifies GPTi84-Plus.
+
+GPTi84-Plus copyright (c) 2026 Xander Pickering.
+Original project: https://github.com/xandwr/GPTi84-Plus
+License: MIT; see LICENSE.
+
+The legacy Arduino relay prototype is copyright its contributors and is
+also distributed under the MIT license retained in
+legacy/arduino-relay/LICENSE.
