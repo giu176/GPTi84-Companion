@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
     <application
-        android:label="TI-84 Companion"
+        android:label="GPTi84 Companion"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

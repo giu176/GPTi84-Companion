@@ -1,4 +1,4 @@
-# TI-84 Companion architecture
+# GPTi84-Companion architecture
 
 ## Product boundary
 

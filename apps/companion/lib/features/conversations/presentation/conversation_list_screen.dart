@@ -22,7 +22,7 @@ class ConversationListScreen extends ConsumerWidget {
         title: const Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('TI-84 Companion'),
+            Text('GPTi84 Companion'),
             Text(
               'Your conversations',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.normal),

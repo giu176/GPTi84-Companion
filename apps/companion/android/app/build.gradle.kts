@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.ti84companion.ti84_companion"
+    namespace = "com.giu176.gpti84companion"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -16,7 +16,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.ti84companion.ti84_companion"
+        applicationId = "com.giu176.gpti84companion"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

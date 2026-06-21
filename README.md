@@ -1,6 +1,6 @@
-# TI-84 Companion
+# GPTi84-Companion
 
-TI-84 Companion connects a plain monochrome TI-84 Plus to AI providers through a Raspberry Pi Pico 2WH, a personal relay, and an Android/iOS companion app.
+GPTi84 Companion connects a plain monochrome TI-84 Plus to AI providers through a Raspberry Pi Pico 2WH, a personal relay, and an Android/iOS companion app.
 
 ```text
 TI-84 Plus <--2.5 mm DBUS--> Pico 2WH <--WSS/Wi-Fi--> relay <--HTTPS--> AI providers

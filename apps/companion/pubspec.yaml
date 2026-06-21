@@ -1,5 +1,5 @@
-name: ti84_companion
-description: "Android and iOS companion for the TI-84 connected chat terminal."
+name: gpti84_companion
+description: "GPTi84 Companion for the TI-84 connected chat terminal."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

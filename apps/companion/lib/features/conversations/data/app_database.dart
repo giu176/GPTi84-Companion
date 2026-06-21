@@ -133,7 +133,7 @@ LazyDatabase _openConnection() {
   return LazyDatabase(() async {
     final directory = await getApplicationDocumentsDirectory();
     return NativeDatabase.createInBackground(
-      File(p.join(directory.path, 'ti84_companion.sqlite')),
+      File(p.join(directory.path, 'gpti84_companion.sqlite')),
     );
   });
 }

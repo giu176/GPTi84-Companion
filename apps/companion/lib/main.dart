@@ -5,5 +5,5 @@ import 'app.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const ProviderScope(child: Ti84CompanionApp()));
+  runApp(const ProviderScope(child: Gpti84CompanionApp()));
 }

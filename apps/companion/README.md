@@ -1,4 +1,4 @@
-# TI-84 Companion mobile app
+# GPTi84 Companion mobile app
 
 Flutter application for Android and iOS.
 

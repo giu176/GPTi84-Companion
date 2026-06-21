@@ -4,14 +4,14 @@ import 'features/conversations/presentation/conversation_list_screen.dart';
 import 'features/device/presentation/device_screen.dart';
 import 'features/settings/presentation/settings_screen.dart';
 
-class Ti84CompanionApp extends StatelessWidget {
-  const Ti84CompanionApp({super.key});
+class Gpti84CompanionApp extends StatelessWidget {
+  const Gpti84CompanionApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     const seed = Color(0xFF6558D3);
     return MaterialApp(
-      title: 'TI-84 Companion',
+      title: 'GPTi84 Companion',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
