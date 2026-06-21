@@ -1,293 +1,413 @@
-# TI-84 Relay — Project Blueprint
+# TI-84 Companion — Project Blueprint
 
-Status: working end-to-end prototype; Android chat is the next implementation milestone
+Status: architecture selected; Pico 2WH compatibility and repository migration are the next milestones
 
-Target calculator: classic monochrome TI-84 Plus (Z80, 96×64 display)
+Primary calculator: plain monochrome TI-84 Plus (Z80, 96×64 display)
 
-Phone target: Android 12+
+Primary bridge: Raspberry Pi Pico 2WH (RP2350 with pre-soldered headers)
+
+Companion targets: Android and iOS through one Flutter application
 
 Last updated: 2026-06-21
 
-## 1. Project goal
+## 1. Product vision
 
-TI-84 Relay turns a classic TI-84 Plus into a compact AI chat terminal. The final data path is:
+TI-84 Companion turns a classic TI-84 Plus into a connected AI terminal while preserving a full, modern chat experience on the user's phone.
 
 ```mermaid
 flowchart LR
-    T["TI-84 Plus chat client"] <-->|"2.5 mm link protocol"| A["Arduino Uno bridge"]
-    A <-->|"UART"| B["HC-05 / HC-06"]
-    B <-->|"Bluetooth Classic SPP"| P["Android chat and relay app"]
-    P <-->|"HTTPS"| AI["AI provider"]
+    T["TI-84 Plus"] <-->|"2.5 mm DBUS link"| P["Raspberry Pi Pico 2WH"]
+    P <-->|"WSS over Wi-Fi"| R["Personal hosted relay"]
+    R <-->|"HTTPS"| AI["AI providers"]
+    M["Flutter companion app"] <-->|"HTTPS and WSS"| R
+    M -.->|"BLE provisioning and status"| P
 ```
 
-The calculator will own compact text entry, response display, scrolling, and link status. The Android app will own the full conversation history, image input, Bluetooth connection, authentication, AI requests, persistence, and conversion of rich responses into a calculator-friendly format.
+The calculator provides compact text and math entry, a pinned-conversation browser, recent text history, paging, connection status, and visible errors. The companion app provides complete rich chat history, images, Markdown and formula rendering, provider and device settings, and synchronization. The relay allows the calculator to continue text-only conversations when the phone is absent.
 
-The current prototype replaces the calculator with a Windows `query.txt` client. This lets the transport and AI relay be proven before connecting untested hardware to the TI-84 link port.
+The initial deployment is personal and self-hosted. Public accounts, billing, quotas, and multi-tenant administration are explicitly deferred.
 
-## 2. Current working prototype
+## 2. Decisions already made
 
-The following round trip is working:
+- The Raspberry Pi Pico 2WH is the primary and only initially supported bridge board.
+- The plain monochrome TI-84 Plus is the first calculator target. Silver Edition, C Silver Edition, CE, and other models require separate validation.
+- The calculator uses its 2.5 mm link port, not USB.
+- Normal calculator traffic uses WSS over Wi-Fi. BLE is used only for provisioning, credential rotation, status, diagnostics, and reset.
+- A personal hosted relay performs AI-provider calls; provider implementations are not duplicated in Pico firmware.
+- The Flutter app is authoritative for complete rich conversations and local image files.
+- The relay keeps bounded text copies of up to eight phone-pinned conversations plus unacknowledged calculator events.
+- Images are handled only by the companion app and relay. Image bytes are never sent to the Pico or calculator.
+- The working Arduino prototype is preserved as a possible future hardware variant, not discarded or silently rewritten.
+
+## 3. Proven starting points
+
+### GPTi84-Plus upstream
+
+The new product will fork `xandwr/GPTi84-Plus`, which provides the starting implementation for:
+
+- open-drain-style DBUS signalling by switching GP6 and GP7 between input/pull-up and output-low;
+- bit, byte, packet, checksum, and TI variable-transfer layers;
+- timeout-safe calculator-to-Pico and Pico-to-calculator transfers;
+- the Z80 `CHAT` sender and TI-BASIC `DECK` pager;
+- TI token decoding for text and mathematical expressions;
+- calculator-safe string encoding and fixed-grid pagination;
+- Wi-Fi, TCP/WSS, TLS, reconnect, and bridge supervision;
+- host-side framing, tokenizer, transfer, and deployment tests.
+
+Upstream was tested on the original Pico W and a plain TI-84 Plus. It has not established Pico 2WH/RP2350 compatibility. The Pico currently connects to an external relay; it does not directly call OpenAI, Anthropic, Gemini, or other AI APIs.
+
+### Existing Arduino prototype
+
+This repository has already validated:
 
 ```mermaid
 flowchart LR
     Q["query.txt"] --> W["Windows file relay"]
     W -->|"USB serial"| A["Arduino Uno"]
     A -->|"UART"| B["HC-05 / HC-06"]
-    B <-->|"Bluetooth Classic SPP"| P["Android relay"]
-    P <-->|"HTTPS"| AI["AI provider"]
+    B <-->|"Bluetooth Classic SPP"| D["Android relay"]
+    D <-->|"HTTPS"| AI["AI provider"]
     W --> O["query_reply.txt"]
 ```
 
-This matches the working prototype documented in the root `README.md`.
+Completed prototype capabilities include COBS framing, CRC validation, ACK/retry, chunking, transaction deduplication, response recovery, Android Keystore-backed settings, a Room transaction journal, and adapters for OpenAI, Anthropic, Gemini, and OpenAI-compatible APIs.
 
-### Completed
+This prototype remains valuable reference material for reliability, provider behavior, tests, and a future Arduino edition. It is not the target architecture for TI-84 Companion.
 
-- Windows file relay reads a UTF-8 prompt from `query.txt`, sends it over USB serial, prints the response, and atomically writes `query_reply.txt`.
-- Arduino Uno bridge forwards framed traffic between USB serial and an HC-05/HC-06-compatible Bluetooth module.
-- HC-05/HC-06 configuration sketches and wiring instructions are present.
-- Android 12+ Kotlin/Compose application pairs with or selects a bonded Bluetooth Classic device, connects over SPP, and maintains the relay connection in a foreground service.
-- The Android relay has bounded reconnect behavior and a Room transaction journal for recovery and deduplication.
-- Provider credentials are stored with Android Keystore-backed encryption and are not stored in the repository.
-- OpenAI Responses API works end to end.
-- Anthropic Messages, Gemini `generateContent`, and generic OpenAI-compatible Chat Completions adapters are implemented, with mocked parser tests.
-- Provider selection, editable endpoint/model configuration, and provider self-tests are implemented.
-- Protocol v1 includes COBS framing, CRC-16 validation, sequence numbers, ACK/retry, chunking, transaction deduplication, and response recovery.
-- Python protocol tests, Android protocol tests, provider tests, Android lint/build tasks, and Arduino compilation commands are documented.
+## 4. Pico 2WH compatibility gate
 
-### Validated prototype setup
+No product feature work begins until the upstream calculator bridge works reliably on the actual Pico 2WH.
 
-- Arduino Uno;
-- ZS-040-compatible HC-06 at 9600 baud (the code also accommodates HC-05 naming/configuration);
-- Pixel 10 running GrapheneOS/Android 16;
-- Android minimum target of Android 12;
-- OpenAI Responses API for the real end-to-end test.
+The `WH` suffix means the wireless Pico 2 board has pre-soldered headers. It does not change GPIO numbering or firmware behavior. The board uses RP2350, so it must receive a Pico 2 W-compatible MicroPython UF2; an original Pico W/RP2040 UF2 must never be installed.
 
-### Not implemented yet
+### Stage A — Runtime validation
 
-- a user-facing conversation screen and persistent chat-log browser in the Android app;
-- sending text and pictures directly from the Android chat UI;
-- supported OpenAI browser/device authorization tied to a user's ChatGPT account;
-- the protected TI-84 two-wire electrical interface;
-- calculator-side link driver, editor, transcript UI, and AI chat client;
-- calculator-backed mathematical tools for agentic AI use.
+1. Install a current Pico 2 W-compatible MicroPython build.
+2. Verify `machine.Pin`, input pull-ups, output-low operation, and monotonic timing functions.
+3. Verify filesystem persistence and recovery after reset and abrupt power loss.
+4. Verify Wi-Fi association, DHCP, DNS, NTP, TCP sockets, TLS certificate validation, and WSS.
+5. Verify BLE scanning, connection, secure provisioning primitives, and reconnect behavior.
+6. Run the upstream host-only test suite and repair RP2350-specific incompatibilities without changing protocol behavior.
 
-## 3. Repository map
+### Stage B — Electrical validation
 
-| Path | Current purpose |
+1. Identify and record the exact TI-84 Plus hardware revision.
+2. Measure tip, ring, and sleeve; idle and asserted voltages; rise time; and current on the actual calculator.
+3. Verify that GP6 and GP7 only release a line or pull it low and never actively drive it high.
+4. Connect TIP to GP6, RING to GP7, and sleeve to ground only after measurements confirm the upstream direct-wiring method is safe for the exact calculator and Pico 2WH.
+5. Stop and design a two-channel open-drain protection stage if measured levels exceed RP2350 GPIO limits or behavior differs from the tested upstream arrangement.
+
+### Stage C — Link and network parity
+
+1. Receive fixed patterns and every byte value from the calculator.
+2. Send fixed patterns and every byte value to the calculator.
+3. Validate checksums, timeouts, unplug recovery, stuck-line recovery, and repeated power cycles.
+4. Transfer TI strings, real variables, programs, and bounded payloads in both directions.
+5. Reproduce the upstream echo relay.
+6. Reproduce the upstream TLS/WSS LLM relay loop.
+7. Tag the passing revision as the first Pico 2WH compatibility baseline.
+
+## 5. Target repository structure
+
+The primary repository will be a real GitHub fork of `xandwr/GPTi84-Plus`.
+
+| Path | Purpose |
 |---|---|
-| `android/` | Kotlin/Compose Bluetooth relay, provider adapters, secure settings, and transaction persistence |
-| `arduino/pc_bt_bridge/` | Working Uno USB-serial ↔ Bluetooth bridge |
-| `arduino/hc05_config/` | HC-05 configuration console |
-| `arduino/hc06_config/` | HC-06 configuration console |
-| `tools/file_relay/` | Working Python `query.txt` serial client and protocol tests |
-| `protocol/spec.md` | Normative wire protocol |
-| `documents/blueprints.md` | Project status, architecture, and roadmap |
+| `src/` | Pico 2WH firmware, retaining the recognizable upstream layout |
+| `programs/` | Z80 and TI-BASIC calculator programs |
+| `tools/` | Upstream development, tokenization, deployment, and diagnostic tools |
+| `tests/` | Upstream-compatible firmware and protocol tests |
+| `backend/` | FastAPI relay, provider adapters, persistence, WSS, and tests |
+| `apps/companion/` | New Flutter Android/iOS companion app |
+| `legacy/arduino-relay/` | Complete current Arduino/Android/Python prototype with its history |
+| `docs/architecture.md` | Detailed interfaces, protocols, storage, and security design |
+| `NOTICE` | Upstream attribution and retained copyright notices |
 
-Future calculator and hardware directories should be added only when implementation begins, so the documented repository layout continues to describe the repository that actually exists.
+Git practices:
 
-## 4. Design boundaries
+- configure the fork as `origin` and `xandwr/GPTi84-Plus` as `upstream`;
+- retain upstream directories and history so useful changes can still be merged;
+- import the current `giu176/TI-84-relay` repository with `git subtree` without squashing;
+- keep the original Arduino repository intact;
+- tag the untouched GPTi84 fork, the imported Arduino prototype, and the Pico 2WH parity baseline;
+- protect `main` and require relevant automated tests before merging;
+- contribute generic DBUS or RP2350 fixes upstream when practical.
 
-### Calculator model
+## 6. Responsibility and data ownership
 
-The primary target is the original monochrome TI-84 Plus or Silver Edition. The TI-84 Plus C Silver Edition and TI-84 Plus CE use different displays and toolchain families and require separate ports.
+### Calculator
 
-### Calculator connection
+- Collect text and optional math input.
+- Browse up to eight pinned conversations using 16-character titles.
+- Open a pinned conversation and page through bounded recent text context.
+- Continue the selected conversation without the phone.
+- Display projected assistant replies in at most eight 16×7-character pages.
+- Show connection, generation, synchronization, timeout, and provider errors.
 
-The first calculator implementation will use the 2.5 mm I/O link port, not USB. The link port is a two-wire, open-drain-style handshake bus; it is not UART.
+### Pico 2WH
 
-Never connect Uno GPIO pins or an HC-05/HC-06 UART directly to the calculator link lines. The interface must allow each line to be sensed at high impedance or pulled low while never actively driving it high. The exact circuit and component values must be checked against measurements from the specific calculator revision.
+- Translate TI DBUS and variable transfers into versioned relay messages.
+- Maintain Wi-Fi and authenticated WSS connectivity.
+- Deduplicate and acknowledge messages across reconnects.
+- Perform BLE provisioning and expose bounded operational status.
+- Store only the minimum device, Wi-Fi, relay, and recovery configuration.
+- Never store provider API keys or image data.
 
-### Responsibility split
+### Hosted relay
 
-The Android app is the authoritative owner of full conversations and rich content. The calculator receives a bounded, plain-text/math-friendly projection of the conversation. Provider JSON, credentials, browser tokens, and image bytes must never be sent to the calculator.
+- Authenticate the companion administrator and individual Pico devices separately.
+- Store provider configurations and API keys encrypted with a deployment master key.
+- Call OpenAI Responses, Anthropic Messages, Gemini `generateContent`, configurable OpenAI-compatible endpoints, and Ollama.
+- Maintain provider-neutral conversation requests and idempotency records.
+- Store bounded text context for the eight pinned calculator conversations.
+- Queue calculator messages until acknowledged by the phone.
+- Convert rich assistant output into deterministic TI-safe text pages.
+- Process phone-uploaded images transiently and delete temporary image data after completion.
 
-### Provider access
+### Flutter companion app
 
-User-supplied API keys are the working authentication method today. API access and consumer subscriptions such as ChatGPT Plus/Pro are separate products unless OpenAI explicitly provides a supported authorization path for the client being built.
+- Own the complete local conversation and message database.
+- Store rich Markdown, formulas, provider metadata, delivery state, and app-private image files.
+- Configure and test providers through the relay.
+- Provision the Pico over BLE with Wi-Fi, relay endpoint, and device credentials.
+- Create, rename, delete, search, pin, unpin, and reorder conversations.
+- Send normal phone messages and image-assisted messages.
+- Synchronize calculator-originated messages without duplication.
+- Push selected conversations and their bounded text projections to the calculator service.
 
-## 5. Next implementation roadmap
+## 7. Conversation and synchronization model
 
-The next work deliberately improves the phone experience before replacing the proven PC test source. This keeps the working transport intact while each new layer is tested independently.
+The phone remains authoritative for full rich history. The relay is authoritative only for delivery state, provider calls, device-visible projections, and pending calculator synchronization.
 
-### Phase 1 — Android chat logs and multimodal composer
+- At most eight conversations can be pinned for calculator access.
+- Pin order determines the calculator's numeric menu order.
+- A pinned title is deterministically transliterated and truncated to 16 TI-safe characters.
+- Pinned relay context is text-only, bounded, and sufficient for provider continuity without the phone.
+- Calculator messages receive stable unique IDs before provider submission.
+- The relay persists the idempotency record before calling a provider.
+- Replayed or duplicated messages return the stored result instead of making a second provider call.
+- Calculator-originated messages remain queued until the phone acknowledges importing them.
+- Unpinning removes the relay's calculator-visible copy after pending synchronization completes.
+- The phone may retain the original rich conversation indefinitely according to user-controlled local retention.
 
-Build a user-friendly Android conversation experience comparable in interaction quality to a modern chat app.
+Images can originate only from the companion app. The relay may send the resulting assistant text projection to a pinned calculator conversation, but the original image and rich response remain phone-only.
 
-#### Scope
+## 8. Relay interfaces
 
-- Add a conversation list with titles, timestamps, last-message previews, create, rename, and delete actions.
-- Add a chat screen with clearly differentiated user and assistant messages.
-- Persist conversations and messages locally in Room, including delivery/generation status and provider metadata.
-- Add a composer that sends normal text messages directly from the phone without requiring `query.txt`.
-- Support attaching pictures from the Android photo picker and, if useful, the camera.
-- Show attachment previews and allow removal before sending.
-- Send images only when the selected provider/model advertises image-input capability; otherwise show an actionable explanation.
-- Store durable Android content references or app-owned copies according to an explicit retention policy.
-- Show generating, retry, cancel, failure, and resend states without creating duplicate provider calls.
-- Render common response content cleanly, including Markdown, code blocks, lists, and mathematical text.
-- Keep calculator-originated and phone-originated messages in the same conversation model so the TI-84 can later join an existing chat.
+The personal release uses FastAPI and SQLite. TLS is mandatory outside local development.
 
-#### Architectural changes
+### Authentication
 
-Use one provider-neutral message model for text and image parts. The provider adapters translate this model into each provider's supported request format. Conversation persistence must be separate from the existing transport transaction journal: a chat message is a user-visible domain object, while a relay transaction tracks reliable delivery.
+- The companion uses an administrator bearer token stored in Android Keystore or iOS Keychain.
+- Each Pico receives a distinct revocable device token during provisioning.
+- Provider secrets are encrypted at rest using a master key supplied through the relay environment.
+- Device tokens cannot access provider credentials or administrative endpoints.
 
-The initial image implementation should send selected images to the configured provider and display them on the phone. The calculator will receive only text descriptions or the resulting assistant response because its protocol and display are not suitable for image transfer.
+### Companion API
 
-#### Acceptance criteria
+Versioned HTTPS endpoints provide:
 
-- A user can create a conversation, send multiple text messages, leave the screen, restart the app, and reopen the complete log.
-- A user can attach a picture, preview it, send it to a capable model, and receive a response in the same conversation.
-- Unsupported provider/model combinations are rejected before network submission.
-- Cancelling, reconnecting, rotating the device, or recreating the process does not duplicate messages.
-- Secrets and private image contents are absent from normal logs and exported diagnostics.
+- relay health and compatibility information;
+- provider create/update/delete, capability metadata, and self-tests;
+- device registration, naming, status, revocation, and credential rotation;
+- conversation synchronization, pinning, ordering, and deletion;
+- text and image message submission, cancellation, retry, and status;
+- pending calculator event download and acknowledgement.
 
-### Phase 2 — OpenAI browser/device login feasibility and implementation
+### Pico protocol
 
-Investigate and, only if supported for this application, implement OpenAI account authorization using a short device code such as `XXXX-XXXXX` and browser login on the phone. The user has seen a similar experience in Odysseus; that implementation can be studied for terminology and user flow, but its private or unofficial endpoints must not be copied blindly.
+The Pico continues using the upstream binary WebSocket and four-byte length-prefix transport. Each body becomes a compact versioned JSON envelope containing:
 
-The likely standards terminology is **OAuth 2.0 Device Authorization Grant** (often called *device-code login* or *device login*). The desired experience is:
+- protocol version;
+- message type;
+- unique message/idempotency ID;
+- device ID;
+- conversation ID where applicable;
+- typed payload;
+- acknowledgement or bounded error information.
 
-1. The app requests a short-lived device/user code from an authorized OpenAI endpoint.
-2. The app opens the verification page in the phone's browser or a secure browser tab.
-3. The user signs in to their OpenAI/ChatGPT account and approves access.
-4. The app polls at the required interval until authorization succeeds or expires.
-5. Tokens are stored with Android Keystore protection, refreshed safely, and revocable through a sign-out action.
+Required message classes include hello/capabilities, heartbeat, conversation list, conversation selection, user message, assistant projection, status, acknowledgement, cancellation, and error. Every length is validated before allocation, and malformed provider output is always treated as data rather than control input.
 
-#### Required feasibility gate
+## 9. Calculator interface
 
-Before implementation, confirm from current official OpenAI documentation and terms that:
+The first version extends the upstream Z80 sender and TI-BASIC pager instead of replacing the proven transfer stack.
 
-- a public device authorization flow exists for this kind of third-party Android client;
-- the issued credentials may access the required model endpoints;
-- ChatGPT subscription entitlements can legally and technically fund those requests;
-- app registration, client identification, scopes, token refresh, and revocation are documented.
+Reserved calculator variables communicate:
 
-If those conditions are not met, retain user-supplied API keys or introduce a supported server-side authorization/token broker. Do not scrape ChatGPT, automate browser cookies, extract tokens from another app, impersonate an official client, or imply that a ChatGPT subscription automatically includes API usage.
+- operation mode: send, list, open, history, status, or cancel;
+- selected pinned-conversation index;
+- Str1 text prompt;
+- Str2 optional math expression;
+- Str3 through Str0 projected display pages;
+- response kind, status, and page count.
 
-#### Acceptance criteria
+The calculator UI provides:
 
-- The user can clearly choose between API-key access and any supported account-login method.
-- Login, expiry, cancellation, refresh, sign-out, and revoked-access paths are tested.
-- Tokens never appear in logs, Room plaintext, backups, diagnostics, or repository files.
-- The UI accurately explains which plan or billing source is being used.
+- a numbered, arrow-key-driven list of up to eight pinned titles;
+- selection and recent-history paging;
+- text and optional math entry;
+- generation and synchronization status;
+- bounded, readable errors;
+- left/right response pagination and a clear return path.
 
-### Phase 3 — Replace `query.txt` with the real TI-84 Plus
+The calculator never receives provider JSON, credentials, access tokens, Markdown documents, or image bytes.
 
-After the Android chat and authentication layers are stable, replace the Windows test sender with the actual calculator while retaining the proven Android, Bluetooth, and provider pipeline.
+## 10. TI-safe text and formula projection
 
-#### Hardware work
+GPTi84 token conversion and fixed-grid paging are the starting point, but layout becomes deterministic server behavior rather than an instruction trusted solely to the AI model.
 
-- Identify and record the exact TI-84 Plus revision.
-- Design and review a protected two-channel open-collector/open-drain interface.
-- Verify tip, ring, sleeve, idle voltage, asserted voltage, rise time, and current limits with measurement equipment.
-- Confirm that the Uno can only release or pull down each calculator link line.
-- Keep the existing protected Uno-to-HC-05/HC-06 UART connection.
+The projection pipeline will:
 
-#### Calculator software
+1. select the assistant's textual content;
+2. remove Markdown presentation syntax while preserving useful structure;
+3. transliterate Unicode and normalize quotes, dashes, lists, and whitespace;
+4. map common mathematical notation into TI-safe forms such as `pi`, `sqrt(`, `*`, `/`, and `^`;
+5. retain short equations and code when they fit;
+6. wrap words into 16 columns and seven body rows;
+7. pad pages to a stable grid expected by the TI-BASIC pager;
+8. enforce the eight-page maximum and indicate truncation deterministically.
 
-- Implement timeout-safe, bidirectional TI link-port byte primitives.
-- Validate every byte value in both directions and recover cleanly after unplugging.
-- Add protocol framing, CRC, ACK/NACK, retry, chunking, session handshake, and bounded buffers compatible with `protocol/spec.md`.
-- Build a compact calculator chat UI with text entry, send/cancel, scrolling transcript, connection state, and visible errors.
-- Transliterate unsupported Unicode and convert rich AI output into a deterministic calculator-friendly math/text subset on Android.
-- Keep only bounded recent history on the calculator; Android remains the authoritative transcript.
+The companion displays the original rich response. Calculator projection never modifies the authoritative phone copy.
 
-#### Staged validation
+## 11. Flutter companion application
 
-1. Transfer fixed patterns and all byte values between Uno and calculator.
-2. Display `HELLO FROM ARDUINO` reliably on the calculator.
-3. Send calculator-entered text to the Uno without Bluetooth.
-4. Carry the same packets through HC-05/HC-06 and Android.
-5. Send a calculator question to the configured AI provider and deliver the answer back.
-6. Pass corruption, duplicate, reconnect, radio-power-cycle, and long-message tests.
+The mobile application starts from scratch under `apps/companion/` rather than extending the Android-only prototype.
 
-#### Acceptance criteria
+Initial technical choices:
 
-- The calculator completes a multi-message AI conversation without the PC relay.
-- The UI remains responsive during receive, retry, and reconnection.
-- No malformed or oversized frame causes a crash, stuck link line, or buffer overrun.
-- Reconnection never submits a user message to the AI provider twice.
-- The protected electrical interface is documented with a schematic, measurements, and bill of materials.
+- Flutter for one Android/iOS codebase;
+- Riverpod for application state;
+- Drift/SQLite for conversations, messages, attachments, outbox, and migrations;
+- `flutter_secure_storage` for administrator and device credentials;
+- platform photo pickers and application-private attachment storage;
+- BLE support for Pico provisioning and status;
+- provider-neutral message parts for text and images.
 
-### Phase 4 — Agentic calculator mathematics
+Required screens and flows:
 
-After chat integration, add narrowly scoped agentic features that let the AI ask the calculator to perform advanced calculus and other mathematical calculations, then incorporate verified results into its answer.
+- relay onboarding and diagnostics;
+- Pico discovery, provisioning, naming, and reset;
+- conversation list, search, create, rename, delete, and pin ordering;
+- rich conversation view;
+- text and image composer with preview and removal;
+- generating, cancel, retry, failure, and resend states;
+- provider/model settings, capability display, and self-test;
+- calculator connectivity, firmware compatibility, and synchronization status;
+- import and acknowledgement of standalone calculator messages.
 
-This must use structured tool calls rather than free-form commands. A request should identify an allowed operation and typed arguments; the calculator returns a typed result or bounded error. Candidate tools include numerical evaluation, equation solving, derivatives, integrals, matrices, statistics, graph sampling, and access to selected calculator variables.
+## 12. Security and privacy rules
 
-Start with a small read-only tool set. Require confirmation before modifying variables, programs, graph settings, or persistent calculator state. Enforce operation allowlists, argument/size limits, timeouts, cancellation, and clear provenance so the chat shows whether a result came from the AI model, Android code, or the physical calculator.
-
-The calculator is a useful computational tool, not an unquestioned oracle: domain errors, approximation limits, numeric precision, and unsupported symbolic operations must be returned explicitly.
-
-## 6. Protocol and persistence principles
-
-- Treat USB serial, UART, and RFCOMM as byte streams that may split or combine frames.
-- Keep the provider-neutral protocol independent of OpenAI, Anthropic, Gemini, or any particular model.
-- Bound every length before allocation or storage.
-- Persist an idempotency key before making an AI request.
-- Persist a completed response before attempting Bluetooth delivery.
-- Resume response delivery from acknowledged chunks without calling the provider again.
-- Keep content frames structurally separate from control frames; provider output is untrusted data.
-- Version protocol and database records and test migrations before release.
-
-## 7. Security, privacy, and operational rules
-
-- Make it explicit when calculator or phone content is sent to an AI provider.
-- Provide conversation deletion and define image/transcript retention behavior.
-- Protect credentials and account tokens with Android Keystore-backed storage.
-- Never commit API keys, tokens, authorization headers, transcripts, or private images.
-- The legacy PIN-based Bluetooth Classic link is not appropriate for highly sensitive data.
-- Do not connect 5 V push-pull GPIO directly to the calculator link port.
+- Never commit API keys, relay tokens, Wi-Fi passwords, transcripts, authorization headers, or private images.
+- Never log provider credentials, image bodies, or full private prompts in production.
+- Make it explicit when content leaves the phone or calculator for an AI provider.
+- Require HTTPS/WSS and validated certificates outside local development.
+- Use bounded retries, request timeouts, cancellation, and idempotency throughout.
+- Delete transient relay image data after provider completion.
+- Provide conversation deletion and document remaining pinned or queued relay data.
+- Do not claim direct Pico wiring is safe until the exact electrical measurements pass.
 - Do not market or use the project for exams or environments where wireless devices or AI assistance are prohibited.
-- Do not use undocumented authentication endpoints in a distributed build without an explicit legal and security review.
+- Do not use undocumented login endpoints or imply that consumer AI subscriptions include API usage.
 
-## 8. Verification commands
+## 13. Development roadmap
 
-Run the checks documented in the root README:
+### Phase 0 — Documentation and repository foundation
 
-```powershell
-# Python
-py -3 -m unittest discover -s tools/file_relay -p "test_*.py"
+- [x] Record the definitive Pico 2WH architecture in this blueprint.
+- [ ] Fork GPTi84-Plus and configure `origin` and `upstream`.
+- [ ] Tag the untouched upstream baseline.
+- [ ] Import the complete current project under `legacy/arduino-relay/` with history.
+- [ ] Add CI for upstream tests and directory-specific future checks.
+- [ ] Add architecture documentation and attribution notices.
 
-# Arduino
-arduino-cli compile --fqbn arduino:avr:uno arduino/pc_bt_bridge
+### Phase 1 — Pico 2WH parity
 
-# Android
-cd android
-.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
-```
+- [ ] Validate the RP2350 MicroPython runtime and wireless stack.
+- [ ] Run upstream host tests.
+- [ ] Measure the actual calculator link lines.
+- [ ] Validate GP6/GP7 release and pull-low behavior.
+- [ ] Pass bidirectional DBUS, timeout, unplug, and all-byte tests.
+- [ ] Reproduce upstream echo and WSS LLM operation.
+- [ ] Tag the Pico 2WH compatibility baseline.
 
-Hardware acceptance tests must be performed separately on the exact Uno, Bluetooth module, Android phone, and TI-84 Plus revision used by the project.
+### Phase 2 — Production relay
 
-## 9. Definition of the next useful releases
+- [ ] Establish FastAPI, SQLite migrations, authentication, and encrypted secrets.
+- [ ] Port OpenAI, Anthropic, Gemini, OpenAI-compatible, and Ollama adapters.
+- [ ] Add provider capability metadata and self-tests.
+- [ ] Add versioned device WSS messages, acknowledgements, and deduplication.
+- [ ] Add pinned conversations, queued calculator events, and deterministic projection.
+- [ ] Document personal self-hosted deployment, backup, update, and recovery.
 
-### Android chat release
+### Phase 3 — Pico provisioning and reliable transport
 
-The phone can create and reopen conversations, send text and pictures, display polished responses, and recover safely from process or network interruptions.
+- [ ] Add BLE provisioning and operational status.
+- [ ] Add device identity and revocable credentials.
+- [ ] Add versioned relay envelopes and compatibility negotiation.
+- [ ] Add reconnect, heartbeat, acknowledgement, cancellation, and replay handling.
+- [ ] Verify that credentials and tokens never enter logs.
 
-### Account-login release
+### Phase 4 — Calculator conversation browser
 
-If officially supported, the phone can authorize through a short device code and browser flow, clearly reporting the entitlement and billing source. Otherwise the app clearly retains supported API-key authentication.
+- [ ] Define reserved TI variables and command semantics.
+- [ ] Extend Z80 transfer routines without regressing upstream behavior.
+- [ ] Add the eight-item pinned-conversation menu.
+- [ ] Add recent-history and assistant-response paging.
+- [ ] Add visible status, timeout, cancel, and bounded error flows.
 
-### Calculator release
+### Phase 5 — Flutter companion
 
-The TI-84 Plus replaces `query.txt`, sends a typed question through the Uno and Bluetooth bridge, displays the AI response, and recovers from one radio power cycle without duplicating the question.
+- [ ] Create the Flutter project and local database schema.
+- [ ] Implement relay onboarding and secure credential storage.
+- [ ] Implement BLE Pico provisioning and status.
+- [ ] Implement rich local conversations and offline outbox.
+- [ ] Implement provider configuration and text chat.
+- [ ] Implement pinning and calculator synchronization.
+- [ ] Implement image selection, preview, provider mapping, and retention.
+- [ ] Validate Android and iOS lifecycle, permissions, and background behavior.
 
-### Agentic mathematics release
+### Phase 6 — Integrated validation and release
 
-The AI can invoke a small, auditable set of calculator operations through structured requests and incorporate the calculator's typed results into the conversation.
+- [ ] Pass calculator, Pico, relay, Android, and iOS integration tests.
+- [ ] Pass power-cycle, Wi-Fi-loss, relay-loss, corruption, duplicate, and long-message tests.
+- [ ] Verify standalone calculator chat and later phone synchronization.
+- [ ] Verify that image-assisted phone conversations can send text results to a pinned calculator chat.
+- [ ] Publish reproducible setup, deployment, recovery, privacy, and hardware documentation.
 
-## 10. Immediate backlog
+## 14. Test and acceptance strategy
 
-- [x] Prove PC → Uno → Bluetooth → Android → AI round trip.
-- [x] Implement protocol framing, CRC, ACK/retry, chunking, deduplication, and response recovery.
-- [x] Implement encrypted provider settings, self-tests, and multiple provider adapters.
-- [ ] Add Android conversation and message persistence for user-visible chat logs.
-- [ ] Build the Android chat list, conversation screen, and text composer.
-- [ ] Add Android photo selection, preview, multimodal provider mapping, and retention controls.
-- [ ] Research official OpenAI device authorization and ChatGPT subscription entitlement support.
-- [ ] Implement supported browser/device login or document why API-key access remains required.
-- [ ] Design and validate the protected TI-84 link-port interface.
-- [ ] Implement and test the calculator link driver.
-- [ ] Build the calculator chat client and replace the Windows file relay.
-- [ ] Specify the calculator math-tool protocol and implement the first safe agentic operations.
+### Automated tests
+
+- Preserve all upstream GPTi84 host tests.
+- Preserve legacy Python, Arduino compile, Android unit, lint, and build checks.
+- Share golden fixtures for relay envelopes, token conversion, formula mapping, pagination, and deduplication.
+- Test backend authentication, encryption, migrations, provider parsing, retries, image deletion, pinning, and queue acknowledgement.
+- Test Flutter database migrations, secure settings, chat rendering, attachment lifecycle, offline outbox, pin ordering, and synchronization.
+
+### Hardware acceptance
+
+- Use the actual plain TI-84 Plus and Pico 2WH.
+- Validate every byte in both directions and recover after unplugging.
+- Browse, open, and continue eight pinned conversations.
+- Complete a multi-message text conversation without the phone present.
+- Reconnect the phone and import standalone messages exactly once.
+- Power-cycle the Pico and relay without duplicating an AI request.
+- Confirm that malformed or oversized data cannot crash the calculator, exhaust Pico memory, or leave a DBUS line asserted.
+- Validate BLE provisioning on physical Android and iOS devices.
+
+## 15. Release definitions
+
+### Pico 2WH compatibility release
+
+The unmodified GPTi84 chat path works on Pico 2WH with documented firmware, electrical measurements, repeatable deployment, and recovery tests.
+
+### Standalone calculator release
+
+The TI-84 can browse pinned chats, send text through the Pico and relay, receive a projected response, and synchronize it to the phone later.
+
+### Companion release
+
+Android and iOS can manage providers and devices, keep complete rich histories, exchange phone and calculator messages, pin conversations, and send images to supported providers.
+
+### Arduino variant
+
+The archived prototype remains buildable and documented. A maintained Arduino edition is considered only after the Pico 2WH product reaches a stable release.
