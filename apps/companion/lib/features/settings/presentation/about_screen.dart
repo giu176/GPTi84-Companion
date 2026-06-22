@@ -14,7 +14,7 @@ class AboutScreen extends StatelessWidget {
             icon: Icons.attach_file,
             title: 'Files and pictures',
             text:
-                'Attachments are copied to app-private storage. OpenAI and Gemini accept supported images and documents; Anthropic accepts images and PDFs; compatible APIs and Ollama accept images when the model supports vision.',
+                'Attachments are copied to app-private storage. OpenAI and Gemini accept supported images and documents; ChatGPT Subscription accepts images experimentally; Anthropic accepts images and PDFs; compatible APIs and Ollama accept images when the model supports vision.',
           ),
           _InfoCard(
             icon: Icons.security_outlined,

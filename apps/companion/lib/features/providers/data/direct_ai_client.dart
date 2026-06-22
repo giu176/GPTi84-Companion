@@ -156,9 +156,9 @@ class DirectAiClient {
     List<ChatAttachment> attachments, {
     bool retried = false,
   }) async {
-    if (attachments.isNotEmpty) {
+    if (attachments.any((attachment) => !attachment.isImage)) {
       throw UnsupportedError(
-        'The experimental ChatGPT Subscription connector currently supports text only. Use the OpenAI API provider for files and pictures.',
+        'The experimental ChatGPT Subscription connector supports pictures but not general files. Use an API provider for documents.',
       );
     }
     final expiry = config.tokenExpiresAt;
@@ -166,6 +166,17 @@ class DirectAiClient {
         expiry.isBefore(DateTime.now().add(const Duration(minutes: 2)))) {
       config = await ChatGptSubscriptionAuth().refresh(config);
       await _store.updateConfig(profileId, config);
+    }
+    final content = <Map<String, dynamic>>[
+      {'type': 'input_text', 'text': text},
+    ];
+    for (final attachment in attachments) {
+      content.add({
+        'type': 'input_image',
+        'image_url':
+            'data:${attachment.mimeType};base64,${await attachment.base64Data()}',
+        'detail': 'auto',
+      });
     }
     final input = <Map<String, dynamic>>[
       ...history.map(
@@ -179,12 +190,7 @@ class DirectAiClient {
           ],
         },
       ),
-      {
-        'role': 'user',
-        'content': [
-          {'type': 'input_text', 'text': text},
-        ],
-      },
+      {'role': 'user', 'content': content},
     ];
     try {
       final response = await _dio.post<ResponseBody>(
@@ -202,8 +208,9 @@ class DirectAiClient {
         ),
       );
       final body = response.data;
-      if (body == null)
+      if (body == null) {
         throw const FormatException('Provider returned no data');
+      }
       return AiReply(await _chatGptStreamText(body.stream));
     } on DioException catch (error) {
       if (!retried &&

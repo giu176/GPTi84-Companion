@@ -13,7 +13,7 @@ The Flutter application may call a user-selected AI provider directly for rich p
 
 Provider credentials live in a versioned encrypted vault. Multiple named profiles of the same provider are permitted. New chats snapshot the global favorite, existing chats retain their selected profile, and assistant messages record which profile generated them.
 
-ChatGPT consumer-subscription access is an isolated experimental interface. It uses Codex device authorization, stores access and refresh tokens in platform secure storage, and calls the private Codex Responses backend. It must remain visibly marked experimental, text-only, and removable without changing stable API-key adapters. The application must never collect ChatGPT passwords, cookies, or browser sessions.
+ChatGPT consumer-subscription access is an isolated experimental interface. It uses Codex device authorization, stores access and refresh tokens in platform secure storage, and calls the private Codex Responses backend. It supports text and Responses-compatible image inputs, but not general file inputs. It must remain visibly marked experimental and removable without changing stable API-key adapters. The application must never collect ChatGPT passwords, cookies, or browser sessions.
 
 ### Calculator and relay
 
