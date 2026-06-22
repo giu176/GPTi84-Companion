@@ -24,6 +24,7 @@ class AiProviderConfig {
     required this.apiKey,
     required this.baseUrl,
     this.refreshToken = '',
+    this.accountId = '',
     this.tokenExpiresAt,
   });
 
@@ -32,6 +33,7 @@ class AiProviderConfig {
   final String apiKey;
   final String baseUrl;
   final String refreshToken;
+  final String accountId;
   final DateTime? tokenExpiresAt;
 
   bool get isConfigured =>
@@ -43,6 +45,7 @@ class AiProviderConfig {
     String? apiKey,
     String? baseUrl,
     String? refreshToken,
+    String? accountId,
     DateTime? tokenExpiresAt,
   }) {
     return AiProviderConfig(
@@ -51,6 +54,7 @@ class AiProviderConfig {
       apiKey: apiKey ?? this.apiKey,
       baseUrl: baseUrl ?? this.baseUrl,
       refreshToken: refreshToken ?? this.refreshToken,
+      accountId: accountId ?? this.accountId,
       tokenExpiresAt: tokenExpiresAt ?? this.tokenExpiresAt,
     );
   }
@@ -61,6 +65,7 @@ class AiProviderConfig {
     'apiKey': apiKey,
     'baseUrl': baseUrl,
     'refreshToken': refreshToken,
+    'accountId': accountId,
     'tokenExpiresAt': tokenExpiresAt?.toIso8601String(),
   };
 
@@ -71,6 +76,7 @@ class AiProviderConfig {
       apiKey: json['apiKey'] as String? ?? '',
       baseUrl: json['baseUrl'] as String? ?? '',
       refreshToken: json['refreshToken'] as String? ?? '',
+      accountId: json['accountId'] as String? ?? '',
       tokenExpiresAt: DateTime.tryParse(
         json['tokenExpiresAt'] as String? ?? '',
       ),

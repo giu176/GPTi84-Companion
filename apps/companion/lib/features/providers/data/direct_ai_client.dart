@@ -45,6 +45,85 @@ class DirectAiClient {
   final AiProviderStore _store;
   final Dio _dio;
 
+  Future<List<String>> listModels(String profileId) async {
+    final profile = await _store.readProfile(profileId);
+    if (profile == null) throw StateError('Provider profile not found');
+    var config = profile.config;
+    if (config.kind == AiProviderKind.chatGptSubscription) {
+      final expiry = config.tokenExpiresAt;
+      if (expiry == null ||
+          expiry.isBefore(DateTime.now().add(const Duration(minutes: 2)))) {
+        config = await ChatGptSubscriptionAuth().refresh(config);
+        await _store.updateConfig(profileId, config);
+      }
+    }
+    return listModelsForConfig(config);
+  }
+
+  Future<List<String>> listModelsForConfig(AiProviderConfig config) async {
+    final Response<dynamic> response;
+    switch (config.kind) {
+      case AiProviderKind.openAi:
+      case AiProviderKind.openAiCompatible:
+        response = await _dio.get<dynamic>(
+          '${_trim(config.baseUrl)}/models',
+          options: Options(
+            headers: config.apiKey.isEmpty
+                ? null
+                : {'Authorization': 'Bearer ${config.apiKey}'},
+          ),
+        );
+      case AiProviderKind.chatGptSubscription:
+        response = await _dio.get<dynamic>(
+          '${_trim(config.baseUrl)}/models',
+          queryParameters: {'client_version': '1.0.0'},
+          options: Options(headers: _chatGptHeaders(config)),
+        );
+      case AiProviderKind.anthropic:
+        response = await _dio.get<dynamic>(
+          '${_trim(config.baseUrl)}/models',
+          options: Options(
+            headers: {
+              'x-api-key': config.apiKey,
+              'anthropic-version': '2023-06-01',
+            },
+          ),
+        );
+      case AiProviderKind.gemini:
+        response = await _dio.get<dynamic>(
+          '${_trim(config.baseUrl)}/models',
+          queryParameters: {'key': config.apiKey},
+        );
+      case AiProviderKind.ollama:
+        response = await _dio.get<dynamic>('${_trim(config.baseUrl)}/api/tags');
+    }
+    final body = response.data;
+    if (body is! Map) return const [];
+    final raw = body['data'] ?? body['models'];
+    if (raw is! List) return const [];
+    final models =
+        raw
+            .whereType<Map>()
+            .map(
+              (item) =>
+                  (item['slug'] ??
+                          item['model'] ??
+                          item['id'] ??
+                          item['name'] ??
+                          item['display_name'])
+                      ?.toString(),
+            )
+            .whereType<String>()
+            .map(
+              (name) => name.startsWith('models/') ? name.substring(7) : name,
+            )
+            .where((name) => name.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort();
+    return models;
+  }
+
   Future<AiReply> send({
     required String profileId,
     required List<ChatTurn> history,
@@ -127,7 +206,7 @@ class DirectAiClient {
           await _dio.get<void>(
             '${_trim(config.baseUrl)}/models',
             queryParameters: {'client_version': '1.0.0'},
-            options: Options(headers: _chatGptHeaders(config.apiKey)),
+            options: Options(headers: _chatGptHeaders(config)),
           );
       }
       final message = 'Connected to ${config.kind.label}';
@@ -167,6 +246,11 @@ class DirectAiClient {
       config = await ChatGptSubscriptionAuth().refresh(config);
       await _store.updateConfig(profileId, config);
     }
+    final resolvedModel = await _resolveChatGptModel(config);
+    if (resolvedModel != config.model) {
+      config = config.copyWith(model: resolvedModel);
+      await _store.updateConfig(profileId, config);
+    }
     final content = <Map<String, dynamic>>[
       {'type': 'input_text', 'text': text},
     ];
@@ -203,7 +287,7 @@ class DirectAiClient {
           'store': false,
         },
         options: Options(
-          headers: {..._chatGptHeaders(config.apiKey)},
+          headers: {..._chatGptHeaders(config)},
           responseType: ResponseType.stream,
         ),
       );
@@ -227,7 +311,13 @@ class DirectAiClient {
           retried: true,
         );
       }
-      rethrow;
+      final status = error.response?.statusCode;
+      final detail = await _dioResponseText(error.response?.data);
+      throw StateError(
+        status == null
+            ? (error.message ?? 'ChatGPT request failed')
+            : 'ChatGPT request failed (HTTP $status)${detail.isEmpty ? '' : ': $detail'}',
+      );
     }
   }
 
@@ -264,6 +354,30 @@ class DirectAiClient {
       }
     }
     return _requireText(deltas.isNotEmpty ? deltas.toString() : fallback);
+  }
+
+  Future<String> _resolveChatGptModel(AiProviderConfig config) async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>(
+        '${_trim(config.baseUrl)}/models',
+        queryParameters: {'client_version': '1.0.0'},
+        options: Options(headers: _chatGptHeaders(config)),
+      );
+      final models = response.data?['models'];
+      if (models is! List) return config.model;
+      for (final raw in models.whereType<Map>()) {
+        final slug = raw['slug']?.toString();
+        if (slug == null || slug.isEmpty) continue;
+        final requested = config.model.toLowerCase();
+        if (slug.toLowerCase() == requested ||
+            raw['display_name']?.toString().toLowerCase() == requested) {
+          return slug;
+        }
+      }
+    } catch (_) {
+      // Sending still gives the authoritative provider error if lookup fails.
+    }
+    return config.model;
   }
 
   Future<AiReply> _openAi(
@@ -517,13 +631,35 @@ class DirectAiClient {
     return value.trim();
   }
 
-  Map<String, String> _chatGptHeaders(String token) => {
-    'Authorization': 'Bearer $token',
+  Map<String, String> _chatGptHeaders(AiProviderConfig config) => {
+    'Authorization': 'Bearer ${config.apiKey}',
+    if (config.accountId.isNotEmpty) 'ChatGPT-Account-Id': config.accountId,
     'Accept': 'application/json, text/event-stream',
     'Origin': 'https://chatgpt.com',
     'Referer': 'https://chatgpt.com/codex',
     'User-Agent': 'GPTi84 Companion ChatGPT Subscription',
   };
+
+  Future<String> _dioResponseText(Object? data) async {
+    if (data is ResponseBody) {
+      try {
+        return (await data.stream
+                .cast<List<int>>()
+                .transform(utf8.decoder)
+                .join())
+            .trim();
+      } catch (_) {
+        return '';
+      }
+    }
+    if (data == null) return '';
+    if (data is String) return data.trim();
+    try {
+      return jsonEncode(data);
+    } catch (_) {
+      return data.toString();
+    }
+  }
 
   String _errorMessage(Object error) {
     if (error is DioException) {

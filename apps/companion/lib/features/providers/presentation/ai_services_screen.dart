@@ -107,6 +107,8 @@ class _AiServicesScreenState extends ConsumerState<AiServicesScreen> {
           name: kind.label,
           config: AiProviderConfig.defaults(kind),
         ),
+        loadModels: (config) =>
+            ref.read(directAiClientProvider).listModelsForConfig(config),
       ),
     );
     if (profile == null) return;
@@ -117,7 +119,11 @@ class _AiServicesScreenState extends ConsumerState<AiServicesScreen> {
   Future<void> _edit(ProviderProfile profile) async {
     final updated = await showDialog<ProviderProfile>(
       context: context,
-      builder: (context) => _ProfileDialog(initial: profile),
+      builder: (context) => _ProfileDialog(
+        initial: profile,
+        loadModels: (config) =>
+            ref.read(directAiClientProvider).listModelsForConfig(config),
+      ),
     );
     if (updated == null) return;
     final vault = await ref.read(aiProviderStoreProvider).upsert(updated);
@@ -325,8 +331,9 @@ class _ProviderCard extends StatelessWidget {
 }
 
 class _ProfileDialog extends StatefulWidget {
-  const _ProfileDialog({required this.initial});
+  const _ProfileDialog({required this.initial, required this.loadModels});
   final ProviderProfile initial;
+  final Future<List<String>> Function(AiProviderConfig config) loadModels;
 
   @override
   State<_ProfileDialog> createState() => _ProfileDialogState();
@@ -338,6 +345,7 @@ class _ProfileDialogState extends State<_ProfileDialog> {
   late final _key = TextEditingController(text: widget.initial.config.apiKey);
   late final _url = TextEditingController(text: widget.initial.config.baseUrl);
   var _obscure = true;
+  var _loadingModels = false;
 
   @override
   void dispose() {
@@ -366,7 +374,20 @@ class _ProfileDialogState extends State<_ProfileDialog> {
             const SizedBox(height: 12),
             TextField(
               controller: _model,
-              decoration: const InputDecoration(labelText: 'Model'),
+              decoration: InputDecoration(
+                labelText: 'Model',
+                helperText: 'Select from the service or enter an ID manually',
+                suffixIcon: IconButton(
+                  tooltip: 'Choose model',
+                  onPressed: _loadingModels ? null : _chooseModel,
+                  icon: _loadingModels
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.arrow_drop_down_circle_outlined),
+                ),
+              ),
             ),
             if (!subscription) ...[
               const SizedBox(height: 12),
@@ -417,6 +438,7 @@ class _ProfileDialogState extends State<_ProfileDialog> {
       apiKey: _key.text.trim(),
       baseUrl: _url.text.trim(),
       refreshToken: previous.refreshToken,
+      accountId: previous.accountId,
       tokenExpiresAt: previous.tokenExpiresAt,
     );
     final uri = Uri.tryParse(updated.baseUrl);
@@ -438,6 +460,58 @@ class _ProfileDialogState extends State<_ProfileDialog> {
         testMessage: '',
       ),
     );
+  }
+
+  Future<void> _chooseModel() async {
+    setState(() => _loadingModels = true);
+    try {
+      final previous = widget.initial.config;
+      final config = AiProviderConfig(
+        kind: previous.kind,
+        model: _model.text.trim(),
+        apiKey: _key.text.trim(),
+        baseUrl: _url.text.trim(),
+        refreshToken: previous.refreshToken,
+        accountId: previous.accountId,
+        tokenExpiresAt: previous.tokenExpiresAt,
+      );
+      final models = await widget.loadModels(config);
+      if (!mounted) return;
+      if (models.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This service returned no models')),
+        );
+        return;
+      }
+      final selected = await showDialog<String>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text('Choose a model'),
+          children: [
+            SizedBox(
+              width: 420,
+              height: 420,
+              child: ListView.builder(
+                itemCount: models.length,
+                itemBuilder: (_, index) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(context, models[index]),
+                  child: Text(models[index]),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+      if (selected != null) _model.text = selected;
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not load models: $error')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loadingModels = false);
+    }
   }
 }
 

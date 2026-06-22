@@ -58,4 +58,29 @@ void main() {
     expect(conversation.providerProfileId, 'favorite');
     expect(message.providerProfileId, 'old');
   });
+
+  test('generated title only replaces the automatic preview', () async {
+    await database.createConversation(id: 'generated', title: 'New chat');
+    await database.renameConversation('generated', 'Initial prompt preview');
+
+    expect(
+      await database.replaceConversationTitle(
+        id: 'generated',
+        expectedTitle: 'Initial prompt preview',
+        title: 'Generated short title',
+      ),
+      isTrue,
+    );
+    expect(
+      await database.replaceConversationTitle(
+        id: 'generated',
+        expectedTitle: 'Initial prompt preview',
+        title: 'Late generated title',
+      ),
+      isFalse,
+    );
+
+    final conversation = (await database.watchConversations().first).single;
+    expect(conversation.title, 'Generated short title');
+  });
 }

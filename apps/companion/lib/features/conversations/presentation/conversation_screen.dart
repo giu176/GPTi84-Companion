@@ -46,6 +46,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   var _sending = false;
   final _attachments = <ChatAttachment>[];
   late var _pinned = widget.initiallyPinned;
+  late var _title = widget.title;
   String? _providerProfileId;
   List<ProviderProfile> _providerProfiles = const [];
 
@@ -90,7 +91,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.title, overflow: TextOverflow.ellipsis),
+            Text(_title, overflow: TextOverflow.ellipsis),
             Text(
               _selectedProfile?.name ?? 'No AI service selected',
               style: Theme.of(context).textTheme.labelSmall,
@@ -126,6 +127,11 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             tooltip: _pinned ? 'Remove from calculator' : 'Pin to calculator',
             onPressed: _togglePinned,
             icon: Icon(_pinned ? Icons.push_pin : Icons.push_pin_outlined),
+          ),
+          IconButton(
+            tooltip: 'Rename chat',
+            onPressed: _rename,
+            icon: const Icon(Icons.edit_outlined),
           ),
         ],
       ),
@@ -276,6 +282,18 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     _attachments.clear();
     final messageId = const Uuid().v4();
     final database = ref.read(databaseProvider);
+    final aiClient = ref.read(directAiClientProvider);
+    final providerStore = ref.read(aiProviderStoreProvider);
+    final conversationId = widget.conversationId;
+    final existingMessages = await database.getMessages(widget.conversationId);
+    final isFirstMessage = existingMessages.isEmpty;
+    String? previewTitle;
+    if (isFirstMessage && text.isNotEmpty) {
+      final initialTitle = _initialTitle(text);
+      previewTitle = initialTitle;
+      await database.renameConversation(widget.conversationId, initialTitle);
+      if (mounted) setState(() => _title = initialTitle);
+    }
     await database.addMessage(
       id: messageId,
       conversationId: widget.conversationId,
@@ -301,14 +319,12 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           .where((message) => message.id != messageId)
           .map((message) => ChatTurn(role: message.role, text: message.content))
           .toList();
-      final reply = await ref
-          .read(directAiClientProvider)
-          .send(
-            profileId: profileId,
-            history: history,
-            text: text,
-            attachments: pendingAttachments,
-          );
+      final reply = await aiClient.send(
+        profileId: profileId,
+        history: history,
+        text: text,
+        attachments: pendingAttachments,
+      );
       await database.setMessageStatus(messageId, 'complete');
       await database.addMessage(
         id: '${messageId}_assistant',
@@ -317,6 +333,17 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         content: reply.text,
         providerProfileId: profileId,
       );
+      if (previewTitle != null) {
+        await _generateTitle(
+          firstMessage: text,
+          firstReply: reply.text,
+          previewTitle: previewTitle,
+          conversationId: conversationId,
+          database: database,
+          aiClient: aiClient,
+          providerStore: providerStore,
+        );
+      }
     } catch (error) {
       await database.setMessageStatus(messageId, 'failed');
       if (mounted) {
@@ -330,6 +357,93 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     } finally {
       if (mounted) setState(() => _sending = false);
     }
+  }
+
+  String _initialTitle(String message) {
+    final words = message.trim().split(RegExp(r'\s+')).take(6).join(' ');
+    return words.length <= 120 ? words : '${words.substring(0, 117)}...';
+  }
+
+  Future<void> _generateTitle({
+    required String firstMessage,
+    required String firstReply,
+    required String previewTitle,
+    required String conversationId,
+    required AppDatabase database,
+    required DirectAiClient aiClient,
+    required AiProviderStore providerStore,
+  }) async {
+    try {
+      final vault = await providerStore.readVault();
+      final defaultProfileId = vault.favoriteProfileId;
+      if (defaultProfileId == null) return;
+      final result = await aiClient.send(
+        profileId: defaultProfileId,
+        history: const [],
+        text:
+            'Write a short title of at most 6 words for this chat. '
+            'Return only the title, without quotes or punctuation wrappers.\n\n'
+            'User: ${_titleContext(firstMessage)}\n'
+            'Assistant: ${_titleContext(firstReply)}',
+        attachments: const [],
+      );
+      final generated = result.text
+          .trim()
+          .replaceAll(RegExp(r'''^["\u201c\u201d']+|["\u201c\u201d']+$'''), '')
+          .split(RegExp(r'\s+'))
+          .take(6)
+          .join(' ');
+      if (generated.isEmpty) return;
+      final title = generated.length <= 120
+          ? generated
+          : '${generated.substring(0, 117)}...';
+      final replaced = await database.replaceConversationTitle(
+        id: conversationId,
+        expectedTitle: previewTitle,
+        title: title,
+      );
+      if (replaced && mounted) setState(() => _title = title);
+    } catch (error, stackTrace) {
+      debugPrint('Automatic chat title generation failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  String _titleContext(String value) {
+    const limit = 2000;
+    return value.length <= limit ? value : value.substring(0, limit);
+  }
+
+  Future<void> _rename() async {
+    final controller = TextEditingController(text: _title);
+    final title = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename chat'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 120,
+          onSubmitted: (value) => Navigator.pop(context, value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (title == null || title.trim().isEmpty) return;
+    await ref
+        .read(databaseProvider)
+        .renameConversation(widget.conversationId, title);
+    if (mounted) setState(() => _title = title.trim());
   }
 
   Future<void> _showAttachmentPicker() async {

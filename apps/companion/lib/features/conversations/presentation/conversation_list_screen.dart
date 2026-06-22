@@ -40,6 +40,7 @@ class ConversationListScreen extends ConsumerWidget {
                 itemBuilder: (context, index) {
                   final conversation = items[index];
                   return Card(
+                    key: ValueKey(conversation.id),
                     child: ListTile(
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 18,
@@ -64,7 +65,21 @@ class ConversationListScreen extends ConsumerWidget {
                                 conversation.updatedAt,
                               ),
                       ),
-                      trailing: const Icon(Icons.chevron_right),
+                      trailing: PopupMenuButton<String>(
+                        onSelected: (action) {
+                          if (action == 'rename') {
+                            _renameConversation(context, ref, conversation);
+                          } else if (action == 'delete') {
+                            ref
+                                .read(databaseProvider)
+                                .deleteConversation(conversation.id);
+                          }
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'rename', child: Text('Rename')),
+                          PopupMenuItem(value: 'delete', child: Text('Delete')),
+                        ],
+                      ),
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
                           builder: (_) => ConversationScreen(
@@ -93,19 +108,40 @@ class ConversationListScreen extends ConsumerWidget {
   }
 
   Future<void> _createConversation(BuildContext context, WidgetRef ref) async {
-    final controller = TextEditingController();
+    final id = const Uuid().v4();
+    const title = 'New chat';
+    final vault = await ref.read(aiProviderStoreProvider).readVault();
+    final profileId = vault.favoriteProfileId;
+    await ref
+        .read(databaseProvider)
+        .createConversation(id: id, title: title, providerProfileId: profileId);
+    if (!context.mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ConversationScreen(
+          conversationId: id,
+          title: title,
+          initiallyPinned: false,
+          initialProviderProfileId: profileId,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _renameConversation(
+    BuildContext context,
+    WidgetRef ref,
+    Conversation conversation,
+  ) async {
+    final controller = TextEditingController(text: conversation.title);
     final title = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Start a conversation'),
+        title: const Text('Rename chat'),
         content: TextField(
           controller: controller,
           autofocus: true,
           maxLength: 120,
-          decoration: const InputDecoration(
-            labelText: 'Title',
-            hintText: 'Calculus study session',
-          ),
           onSubmitted: (value) => Navigator.pop(context, value),
         ),
         actions: [
@@ -115,34 +151,17 @@ class ConversationListScreen extends ConsumerWidget {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('Create'),
+            child: const Text('Save'),
           ),
         ],
       ),
     );
     controller.dispose();
-    if (title == null || title.trim().isEmpty || !context.mounted) return;
-    final id = const Uuid().v4();
-    final vault = await ref.read(aiProviderStoreProvider).readVault();
-    final profileId = vault.favoriteProfileId;
-    await ref
-        .read(databaseProvider)
-        .createConversation(
-          id: id,
-          title: title.trim(),
-          providerProfileId: profileId,
-        );
-    if (!context.mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => ConversationScreen(
-          conversationId: id,
-          title: title.trim(),
-          initiallyPinned: false,
-          initialProviderProfileId: profileId,
-        ),
-      ),
-    );
+    if (title != null && title.trim().isNotEmpty) {
+      await ref
+          .read(databaseProvider)
+          .renameConversation(conversation.id, title);
+    }
   }
 }
 

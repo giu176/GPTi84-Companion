@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 
 import 'ai_provider_store.dart';
@@ -141,8 +143,29 @@ class ChatGptSubscriptionAuth {
       apiKey: accessToken,
       refreshToken:
           data['refresh_token']?.toString() ?? fallback?.refreshToken ?? '',
+      accountId:
+          _accountIdFromToken(data['id_token']?.toString() ?? accessToken) ??
+          data['account_id']?.toString() ??
+          fallback?.accountId ??
+          '',
       tokenExpiresAt: DateTime.now().add(Duration(seconds: expiresIn)),
       baseUrl: baseUrl,
     );
+  }
+
+  String? _accountIdFromToken(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return null;
+      final payload = jsonDecode(
+        utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))),
+      );
+      if (payload is! Map<String, dynamic>) return null;
+      final auth = payload['https://api.openai.com/auth'];
+      if (auth is! Map<String, dynamic>) return null;
+      return auth['chatgpt_account_id']?.toString();
+    } catch (_) {
+      return null;
+    }
   }
 }

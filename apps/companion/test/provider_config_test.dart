@@ -39,6 +39,7 @@ void main() {
       model: 'gpt-test',
       apiKey: 'access',
       refreshToken: 'refresh',
+      accountId: 'account-123',
       tokenExpiresAt: expiry,
       baseUrl: 'https://chatgpt.com/backend-api/codex',
     );
@@ -46,6 +47,7 @@ void main() {
     final restored = AiProviderConfig.fromJson(original.toJson());
     expect(restored.refreshToken, 'refresh');
     expect(restored.tokenExpiresAt, expiry);
+    expect(restored.accountId, 'account-123');
     expect(restored.isConfigured, isTrue);
   });
 

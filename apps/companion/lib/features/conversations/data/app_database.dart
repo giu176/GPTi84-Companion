@@ -145,6 +145,37 @@ class AppDatabase extends _$AppDatabase {
     );
   }
 
+  Future<void> renameConversation(String id, String title) {
+    final cleaned = title.trim();
+    if (cleaned.isEmpty) throw ArgumentError.value(title, 'title');
+    return (update(conversations)..where((row) => row.id.equals(id))).write(
+      ConversationsCompanion(
+        title: Value(cleaned),
+        updatedAt: Value(DateTime.now()),
+      ),
+    );
+  }
+
+  Future<bool> replaceConversationTitle({
+    required String id,
+    required String expectedTitle,
+    required String title,
+  }) async {
+    final cleaned = title.trim();
+    if (cleaned.isEmpty) throw ArgumentError.value(title, 'title');
+    final updated =
+        await (update(conversations)..where(
+              (row) => row.id.equals(id) & row.title.equals(expectedTitle),
+            ))
+            .write(
+              ConversationsCompanion(
+                title: Value(cleaned),
+                updatedAt: Value(DateTime.now()),
+              ),
+            );
+    return updated == 1;
+  }
+
   Future<void> reassignProvider(String removedId, String? replacementId) async {
     await transaction(() async {
       await (update(
