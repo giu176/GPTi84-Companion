@@ -71,6 +71,8 @@ class ConversationListScreen extends ConsumerWidget {
                             conversationId: conversation.id,
                             title: conversation.title,
                             initiallyPinned: conversation.isPinned,
+                            initialProviderProfileId:
+                                conversation.providerProfileId,
                           ),
                         ),
                       ),
@@ -121,9 +123,15 @@ class ConversationListScreen extends ConsumerWidget {
     controller.dispose();
     if (title == null || title.trim().isEmpty || !context.mounted) return;
     final id = const Uuid().v4();
+    final vault = await ref.read(aiProviderStoreProvider).readVault();
+    final profileId = vault.favoriteProfileId;
     await ref
         .read(databaseProvider)
-        .createConversation(id: id, title: title.trim());
+        .createConversation(
+          id: id,
+          title: title.trim(),
+          providerProfileId: profileId,
+        );
     if (!context.mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -131,6 +139,7 @@ class ConversationListScreen extends ConsumerWidget {
           conversationId: id,
           title: title.trim(),
           initiallyPinned: false,
+          initialProviderProfileId: profileId,
         ),
       ),
     );

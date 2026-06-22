@@ -1,10 +1,20 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:dio/dio.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:mime/mime.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/providers.dart';
+import '../../providers/data/ai_provider_store.dart';
+import '../../providers/data/direct_ai_client.dart';
 import '../data/app_database.dart';
 
 final _messagesProvider = StreamProvider.family<List<ChatMessage>, String>(
@@ -17,12 +27,14 @@ class ConversationScreen extends ConsumerStatefulWidget {
     required this.conversationId,
     required this.title,
     required this.initiallyPinned,
+    required this.initialProviderProfileId,
     super.key,
   });
 
   final String conversationId;
   final String title;
   final bool initiallyPinned;
+  final String? initialProviderProfileId;
 
   @override
   ConsumerState<ConversationScreen> createState() => _ConversationScreenState();
@@ -32,7 +44,36 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   final _composer = TextEditingController();
   final _scrollController = ScrollController();
   var _sending = false;
+  final _attachments = <ChatAttachment>[];
   late var _pinned = widget.initiallyPinned;
+  String? _providerProfileId;
+  List<ProviderProfile> _providerProfiles = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _providerProfileId = widget.initialProviderProfileId;
+    _loadProviders();
+  }
+
+  Future<void> _loadProviders() async {
+    final vault = await ref.read(aiProviderStoreProvider).readVault();
+    var selected = _providerProfileId;
+    if (selected == null || vault.profile(selected) == null) {
+      selected = vault.favoriteProfileId;
+      if (selected != null) {
+        await ref
+            .read(databaseProvider)
+            .setConversationProvider(widget.conversationId, selected);
+      }
+    }
+    if (mounted) {
+      setState(() {
+        _providerProfiles = vault.profiles;
+        _providerProfileId = selected;
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -46,8 +87,41 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     final messages = ref.watch(_messagesProvider(widget.conversationId));
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.title, overflow: TextOverflow.ellipsis),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.title, overflow: TextOverflow.ellipsis),
+            Text(
+              _selectedProfile?.name ?? 'No AI service selected',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+          ],
+        ),
         actions: [
+          PopupMenuButton<String>(
+            tooltip: 'Choose AI service',
+            icon: const Icon(Icons.auto_awesome_outlined),
+            enabled: _providerProfiles.isNotEmpty,
+            onSelected: _selectProvider,
+            itemBuilder: (context) => _providerProfiles
+                .map(
+                  (profile) => PopupMenuItem(
+                    value: profile.id,
+                    child: Row(
+                      children: [
+                        Icon(
+                          profile.id == _providerProfileId
+                              ? Icons.radio_button_checked
+                              : Icons.radio_button_unchecked,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(child: Text(profile.name)),
+                      ],
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
           IconButton(
             tooltip: _pinned ? 'Remove from calculator' : 'Pin to calculator',
             onPressed: _togglePinned,
@@ -87,8 +161,10 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                   controller: _scrollController,
                   padding: const EdgeInsets.fromLTRB(12, 16, 12, 12),
                   itemCount: items.length,
-                  itemBuilder: (_, index) =>
-                      _MessageBubble(message: items[index]),
+                  itemBuilder: (_, index) => _MessageBubble(
+                    message: items[index],
+                    providerName: _profileName(items[index].providerProfileId),
+                  ),
                 );
               },
               error: (error, _) =>
@@ -96,7 +172,50 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
               loading: () => const Center(child: CircularProgressIndicator()),
             ),
           ),
-          _Composer(controller: _composer, sending: _sending, onSend: _send),
+          if (_attachments.isNotEmpty)
+            SizedBox(
+              height: 62,
+              child: ListView.separated(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                scrollDirection: Axis.horizontal,
+                itemCount: _attachments.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final attachment = _attachments[index];
+                  return InputChip(
+                    avatar: attachment.isImage
+                        ? ClipOval(
+                            child: Image.file(
+                              File(attachment.path),
+                              width: 28,
+                              height: 28,
+                              fit: BoxFit.cover,
+                            ),
+                          )
+                        : const Icon(Icons.description_outlined, size: 18),
+                    label: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 180),
+                      child: Text(
+                        attachment.name,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    onDeleted: _sending
+                        ? null
+                        : () => setState(() => _attachments.removeAt(index)),
+                  );
+                },
+              ),
+            ),
+          _Composer(
+            controller: _composer,
+            sending: _sending,
+            onSend: _send,
+            onAttach: _showAttachmentPicker,
+          ),
         ],
       ),
     );
@@ -117,11 +236,44 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     }
   }
 
+  ProviderProfile? get _selectedProfile {
+    for (final profile in _providerProfiles) {
+      if (profile.id == _providerProfileId) return profile;
+    }
+    return null;
+  }
+
+  String? _profileName(String? id) {
+    if (id == null) return null;
+    for (final profile in _providerProfiles) {
+      if (profile.id == id) return profile.name;
+    }
+    return 'Removed service';
+  }
+
+  Future<void> _selectProvider(String id) async {
+    await ref
+        .read(databaseProvider)
+        .setConversationProvider(widget.conversationId, id);
+    if (mounted) setState(() => _providerProfileId = id);
+  }
+
   Future<void> _send() async {
     final text = _composer.text.trim();
-    if (text.isEmpty || _sending) return;
+    if ((text.isEmpty && _attachments.isEmpty) || _sending) return;
+    final profileId = _providerProfileId;
+    if (profileId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Configure an AI service in Settings before sending'),
+        ),
+      );
+      return;
+    }
     _composer.clear();
     setState(() => _sending = true);
+    final pendingAttachments = List<ChatAttachment>.of(_attachments);
+    _attachments.clear();
     final messageId = const Uuid().v4();
     final database = ref.read(databaseProvider);
     await database.addMessage(
@@ -130,21 +282,40 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       role: 'user',
       content: text,
       status: 'sending',
+      attachmentsJson: jsonEncode(
+        pendingAttachments
+            .map(
+              (item) => {
+                'path': item.path,
+                'name': item.name,
+                'mimeType': item.mimeType,
+              },
+            )
+            .toList(),
+      ),
+      providerProfileId: profileId,
     );
     try {
+      final messages = await database.getMessages(widget.conversationId);
+      final history = messages
+          .where((message) => message.id != messageId)
+          .map((message) => ChatTurn(role: message.role, text: message.content))
+          .toList();
       final reply = await ref
-          .read(relayClientProvider)
-          .sendText(
-            messageId: messageId,
-            conversationId: widget.conversationId,
+          .read(directAiClientProvider)
+          .send(
+            profileId: profileId,
+            history: history,
             text: text,
+            attachments: pendingAttachments,
           );
       await database.setMessageStatus(messageId, 'complete');
       await database.addMessage(
-        id: reply.id,
+        id: '${messageId}_assistant',
         conversationId: widget.conversationId,
         role: 'assistant',
         content: reply.text,
+        providerProfileId: profileId,
       );
     } catch (error) {
       await database.setMessageStatus(messageId, 'failed');
@@ -160,12 +331,80 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       if (mounted) setState(() => _sending = false);
     }
   }
+
+  Future<void> _showAttachmentPicker() async {
+    final source = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Picture from gallery'),
+              onTap: () => Navigator.pop(context, 'gallery'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt_outlined),
+              title: const Text('Take a picture'),
+              onTap: () => Navigator.pop(context, 'camera'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.attach_file),
+              title: const Text('Choose a file'),
+              onTap: () => Navigator.pop(context, 'file'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+    if (source == 'file') {
+      final files = await openFiles();
+      for (final file in files) {
+        await _addAttachment(file.path, file.name);
+      }
+    } else {
+      final image = await ImagePicker().pickImage(
+        source: source == 'camera' ? ImageSource.camera : ImageSource.gallery,
+        imageQuality: 90,
+      );
+      if (image != null) await _addAttachment(image.path, image.name);
+    }
+  }
+
+  Future<void> _addAttachment(String path, String name) async {
+    final size = File(path).lengthSync();
+    if (size > 50 * 1024 * 1024) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Each attachment must be smaller than 50 MB'),
+        ),
+      );
+      return;
+    }
+    final directory = Directory(
+      p.join((await getApplicationDocumentsDirectory()).path, 'attachments'),
+    );
+    await directory.create(recursive: true);
+    final storedPath = p.join(
+      directory.path,
+      '${const Uuid().v4()}_${p.basename(name)}',
+    );
+    await File(path).copy(storedPath);
+    final attachment = ChatAttachment(
+      path: storedPath,
+      name: name,
+      mimeType: lookupMimeType(path) ?? 'application/octet-stream',
+    );
+    if (mounted) setState(() => _attachments.add(attachment));
+  }
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, this.providerName});
 
   final ChatMessage message;
+  final String? providerName;
 
   @override
   Widget build(BuildContext context) {
@@ -191,6 +430,7 @@ class _MessageBubble extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            ..._attachmentWidgets(context),
             if (isUser)
               Text(message.content)
             else
@@ -205,11 +445,56 @@ class _MessageBubble extends StatelessWidget {
                       : colors.outline,
                 ),
               ),
+            ] else if (!isUser && providerName != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                providerName!,
+                style: Theme.of(
+                  context,
+                ).textTheme.labelSmall?.copyWith(color: colors.outline),
+              ),
             ],
           ],
         ),
       ),
     );
+  }
+
+  List<Widget> _attachmentWidgets(BuildContext context) {
+    final raw = message.attachmentsJson;
+    if (raw == null || raw.isEmpty) return const [];
+    final items = (jsonDecode(raw) as List<dynamic>)
+        .whereType<Map<String, dynamic>>();
+    return [
+      for (final item in items) ...[
+        if ((item['mimeType']?.toString() ?? '').startsWith('image/') &&
+            File(item['path']?.toString() ?? '').existsSync())
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.file(
+                File(item['path'].toString()),
+                width: 260,
+                height: 180,
+                fit: BoxFit.cover,
+              ),
+            ),
+          )
+        else
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.description_outlined, size: 18),
+                const SizedBox(width: 6),
+                Flexible(child: Text(item['name']?.toString() ?? 'Attachment')),
+              ],
+            ),
+          ),
+      ],
+    ];
   }
 }
 
@@ -218,11 +503,13 @@ class _Composer extends StatelessWidget {
     required this.controller,
     required this.sending,
     required this.onSend,
+    required this.onAttach,
   });
 
   final TextEditingController controller;
   final bool sending;
   final VoidCallback onSend;
+  final VoidCallback onAttach;
 
   @override
   Widget build(BuildContext context) {
@@ -235,7 +522,7 @@ class _Composer extends StatelessWidget {
           children: [
             IconButton.filledTonal(
               tooltip: 'Attach image (next milestone)',
-              onPressed: null,
+              onPressed: sending ? null : onAttach,
               icon: const Icon(Icons.add_photo_alternate_outlined),
             ),
             const SizedBox(width: 8),

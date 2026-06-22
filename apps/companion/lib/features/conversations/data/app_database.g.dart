@@ -57,6 +57,18 @@ class $ConversationsTable extends Conversations
     type: DriftSqlType.int,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _providerProfileIdMeta = const VerificationMeta(
+    'providerProfileId',
+  );
+  @override
+  late final GeneratedColumn<String> providerProfileId =
+      GeneratedColumn<String>(
+        'provider_profile_id',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
   static const VerificationMeta _createdAtMeta = const VerificationMeta(
     'createdAt',
   );
@@ -85,6 +97,7 @@ class $ConversationsTable extends Conversations
     title,
     isPinned,
     pinOrder,
+    providerProfileId,
     createdAt,
     updatedAt,
   ];
@@ -123,6 +136,15 @@ class $ConversationsTable extends Conversations
       context.handle(
         _pinOrderMeta,
         pinOrder.isAcceptableOrUnknown(data['pin_order']!, _pinOrderMeta),
+      );
+    }
+    if (data.containsKey('provider_profile_id')) {
+      context.handle(
+        _providerProfileIdMeta,
+        providerProfileId.isAcceptableOrUnknown(
+          data['provider_profile_id']!,
+          _providerProfileIdMeta,
+        ),
       );
     }
     if (data.containsKey('created_at')) {
@@ -166,6 +188,10 @@ class $ConversationsTable extends Conversations
         DriftSqlType.int,
         data['${effectivePrefix}pin_order'],
       ),
+      providerProfileId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}provider_profile_id'],
+      ),
       createdAt: attachedDatabase.typeMapping.read(
         DriftSqlType.dateTime,
         data['${effectivePrefix}created_at'],
@@ -188,6 +214,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   final String title;
   final bool isPinned;
   final int? pinOrder;
+  final String? providerProfileId;
   final DateTime createdAt;
   final DateTime updatedAt;
   const Conversation({
@@ -195,6 +222,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     required this.title,
     required this.isPinned,
     this.pinOrder,
+    this.providerProfileId,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -206,6 +234,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     map['is_pinned'] = Variable<bool>(isPinned);
     if (!nullToAbsent || pinOrder != null) {
       map['pin_order'] = Variable<int>(pinOrder);
+    }
+    if (!nullToAbsent || providerProfileId != null) {
+      map['provider_profile_id'] = Variable<String>(providerProfileId);
     }
     map['created_at'] = Variable<DateTime>(createdAt);
     map['updated_at'] = Variable<DateTime>(updatedAt);
@@ -220,6 +251,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       pinOrder: pinOrder == null && nullToAbsent
           ? const Value.absent()
           : Value(pinOrder),
+      providerProfileId: providerProfileId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(providerProfileId),
       createdAt: Value(createdAt),
       updatedAt: Value(updatedAt),
     );
@@ -235,6 +269,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       title: serializer.fromJson<String>(json['title']),
       isPinned: serializer.fromJson<bool>(json['isPinned']),
       pinOrder: serializer.fromJson<int?>(json['pinOrder']),
+      providerProfileId: serializer.fromJson<String?>(
+        json['providerProfileId'],
+      ),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
       updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
     );
@@ -247,6 +284,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       'title': serializer.toJson<String>(title),
       'isPinned': serializer.toJson<bool>(isPinned),
       'pinOrder': serializer.toJson<int?>(pinOrder),
+      'providerProfileId': serializer.toJson<String?>(providerProfileId),
       'createdAt': serializer.toJson<DateTime>(createdAt),
       'updatedAt': serializer.toJson<DateTime>(updatedAt),
     };
@@ -257,6 +295,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     String? title,
     bool? isPinned,
     Value<int?> pinOrder = const Value.absent(),
+    Value<String?> providerProfileId = const Value.absent(),
     DateTime? createdAt,
     DateTime? updatedAt,
   }) => Conversation(
@@ -264,6 +303,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
     title: title ?? this.title,
     isPinned: isPinned ?? this.isPinned,
     pinOrder: pinOrder.present ? pinOrder.value : this.pinOrder,
+    providerProfileId: providerProfileId.present
+        ? providerProfileId.value
+        : this.providerProfileId,
     createdAt: createdAt ?? this.createdAt,
     updatedAt: updatedAt ?? this.updatedAt,
   );
@@ -273,6 +315,9 @@ class Conversation extends DataClass implements Insertable<Conversation> {
       title: data.title.present ? data.title.value : this.title,
       isPinned: data.isPinned.present ? data.isPinned.value : this.isPinned,
       pinOrder: data.pinOrder.present ? data.pinOrder.value : this.pinOrder,
+      providerProfileId: data.providerProfileId.present
+          ? data.providerProfileId.value
+          : this.providerProfileId,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
       updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
     );
@@ -285,6 +330,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
           ..write('title: $title, ')
           ..write('isPinned: $isPinned, ')
           ..write('pinOrder: $pinOrder, ')
+          ..write('providerProfileId: $providerProfileId, ')
           ..write('createdAt: $createdAt, ')
           ..write('updatedAt: $updatedAt')
           ..write(')'))
@@ -292,8 +338,15 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   }
 
   @override
-  int get hashCode =>
-      Object.hash(id, title, isPinned, pinOrder, createdAt, updatedAt);
+  int get hashCode => Object.hash(
+    id,
+    title,
+    isPinned,
+    pinOrder,
+    providerProfileId,
+    createdAt,
+    updatedAt,
+  );
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -302,6 +355,7 @@ class Conversation extends DataClass implements Insertable<Conversation> {
           other.title == this.title &&
           other.isPinned == this.isPinned &&
           other.pinOrder == this.pinOrder &&
+          other.providerProfileId == this.providerProfileId &&
           other.createdAt == this.createdAt &&
           other.updatedAt == this.updatedAt);
 }
@@ -311,6 +365,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
   final Value<String> title;
   final Value<bool> isPinned;
   final Value<int?> pinOrder;
+  final Value<String?> providerProfileId;
   final Value<DateTime> createdAt;
   final Value<DateTime> updatedAt;
   final Value<int> rowid;
@@ -319,6 +374,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     this.title = const Value.absent(),
     this.isPinned = const Value.absent(),
     this.pinOrder = const Value.absent(),
+    this.providerProfileId = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.updatedAt = const Value.absent(),
     this.rowid = const Value.absent(),
@@ -328,6 +384,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     required String title,
     this.isPinned = const Value.absent(),
     this.pinOrder = const Value.absent(),
+    this.providerProfileId = const Value.absent(),
     required DateTime createdAt,
     required DateTime updatedAt,
     this.rowid = const Value.absent(),
@@ -340,6 +397,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     Expression<String>? title,
     Expression<bool>? isPinned,
     Expression<int>? pinOrder,
+    Expression<String>? providerProfileId,
     Expression<DateTime>? createdAt,
     Expression<DateTime>? updatedAt,
     Expression<int>? rowid,
@@ -349,6 +407,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
       if (title != null) 'title': title,
       if (isPinned != null) 'is_pinned': isPinned,
       if (pinOrder != null) 'pin_order': pinOrder,
+      if (providerProfileId != null) 'provider_profile_id': providerProfileId,
       if (createdAt != null) 'created_at': createdAt,
       if (updatedAt != null) 'updated_at': updatedAt,
       if (rowid != null) 'rowid': rowid,
@@ -360,6 +419,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     Value<String>? title,
     Value<bool>? isPinned,
     Value<int?>? pinOrder,
+    Value<String?>? providerProfileId,
     Value<DateTime>? createdAt,
     Value<DateTime>? updatedAt,
     Value<int>? rowid,
@@ -369,6 +429,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
       title: title ?? this.title,
       isPinned: isPinned ?? this.isPinned,
       pinOrder: pinOrder ?? this.pinOrder,
+      providerProfileId: providerProfileId ?? this.providerProfileId,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       rowid: rowid ?? this.rowid,
@@ -390,6 +451,9 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
     if (pinOrder.present) {
       map['pin_order'] = Variable<int>(pinOrder.value);
     }
+    if (providerProfileId.present) {
+      map['provider_profile_id'] = Variable<String>(providerProfileId.value);
+    }
     if (createdAt.present) {
       map['created_at'] = Variable<DateTime>(createdAt.value);
     }
@@ -409,6 +473,7 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
           ..write('title: $title, ')
           ..write('isPinned: $isPinned, ')
           ..write('pinOrder: $pinOrder, ')
+          ..write('providerProfileId: $providerProfileId, ')
           ..write('createdAt: $createdAt, ')
           ..write('updatedAt: $updatedAt, ')
           ..write('rowid: $rowid')
@@ -483,6 +548,29 @@ class $ChatMessagesTable extends ChatMessages
     requiredDuringInsert: false,
     defaultValue: const Constant('complete'),
   );
+  static const VerificationMeta _attachmentsJsonMeta = const VerificationMeta(
+    'attachmentsJson',
+  );
+  @override
+  late final GeneratedColumn<String> attachmentsJson = GeneratedColumn<String>(
+    'attachments_json',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _providerProfileIdMeta = const VerificationMeta(
+    'providerProfileId',
+  );
+  @override
+  late final GeneratedColumn<String> providerProfileId =
+      GeneratedColumn<String>(
+        'provider_profile_id',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
   static const VerificationMeta _createdAtMeta = const VerificationMeta(
     'createdAt',
   );
@@ -502,6 +590,8 @@ class $ChatMessagesTable extends ChatMessages
     content,
     origin,
     status,
+    attachmentsJson,
+    providerProfileId,
     createdAt,
   ];
   @override
@@ -560,6 +650,24 @@ class $ChatMessagesTable extends ChatMessages
         status.isAcceptableOrUnknown(data['status']!, _statusMeta),
       );
     }
+    if (data.containsKey('attachments_json')) {
+      context.handle(
+        _attachmentsJsonMeta,
+        attachmentsJson.isAcceptableOrUnknown(
+          data['attachments_json']!,
+          _attachmentsJsonMeta,
+        ),
+      );
+    }
+    if (data.containsKey('provider_profile_id')) {
+      context.handle(
+        _providerProfileIdMeta,
+        providerProfileId.isAcceptableOrUnknown(
+          data['provider_profile_id']!,
+          _providerProfileIdMeta,
+        ),
+      );
+    }
     if (data.containsKey('created_at')) {
       context.handle(
         _createdAtMeta,
@@ -601,6 +709,14 @@ class $ChatMessagesTable extends ChatMessages
         DriftSqlType.string,
         data['${effectivePrefix}status'],
       )!,
+      attachmentsJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}attachments_json'],
+      ),
+      providerProfileId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}provider_profile_id'],
+      ),
       createdAt: attachedDatabase.typeMapping.read(
         DriftSqlType.dateTime,
         data['${effectivePrefix}created_at'],
@@ -621,6 +737,8 @@ class ChatMessage extends DataClass implements Insertable<ChatMessage> {
   final String content;
   final String origin;
   final String status;
+  final String? attachmentsJson;
+  final String? providerProfileId;
   final DateTime createdAt;
   const ChatMessage({
     required this.id,
@@ -629,6 +747,8 @@ class ChatMessage extends DataClass implements Insertable<ChatMessage> {
     required this.content,
     required this.origin,
     required this.status,
+    this.attachmentsJson,
+    this.providerProfileId,
     required this.createdAt,
   });
   @override
@@ -640,6 +760,12 @@ class ChatMessage extends DataClass implements Insertable<ChatMessage> {
     map['content'] = Variable<String>(content);
     map['origin'] = Variable<String>(origin);
     map['status'] = Variable<String>(status);
+    if (!nullToAbsent || attachmentsJson != null) {
+      map['attachments_json'] = Variable<String>(attachmentsJson);
+    }
+    if (!nullToAbsent || providerProfileId != null) {
+      map['provider_profile_id'] = Variable<String>(providerProfileId);
+    }
     map['created_at'] = Variable<DateTime>(createdAt);
     return map;
   }
@@ -652,6 +778,12 @@ class ChatMessage extends DataClass implements Insertable<ChatMessage> {
       content: Value(content),
       origin: Value(origin),
       status: Value(status),
+      attachmentsJson: attachmentsJson == null && nullToAbsent
+          ? const Value.absent()
+          : Value(attachmentsJson),
+      providerProfileId: providerProfileId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(providerProfileId),
       createdAt: Value(createdAt),
     );
   }
@@ -668,6 +800,10 @@ class ChatMessage extends DataClass implements Insertable<ChatMessage> {
       content: serializer.fromJson<String>(json['content']),
       origin: serializer.fromJson<String>(json['origin']),
       status: serializer.fromJson<String>(json['status']),
+      attachmentsJson: serializer.fromJson<String?>(json['attachmentsJson']),
+      providerProfileId: serializer.fromJson<String?>(
+        json['providerProfileId'],
+      ),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
     );
   }
@@ -681,6 +817,8 @@ class ChatMessage extends DataClass implements Insertable<ChatMessage> {
       'content': serializer.toJson<String>(content),
       'origin': serializer.toJson<String>(origin),
       'status': serializer.toJson<String>(status),
+      'attachmentsJson': serializer.toJson<String?>(attachmentsJson),
+      'providerProfileId': serializer.toJson<String?>(providerProfileId),
       'createdAt': serializer.toJson<DateTime>(createdAt),
     };
   }
@@ -692,6 +830,8 @@ class ChatMessage extends DataClass implements Insertable<ChatMessage> {
     String? content,
     String? origin,
     String? status,
+    Value<String?> attachmentsJson = const Value.absent(),
+    Value<String?> providerProfileId = const Value.absent(),
     DateTime? createdAt,
   }) => ChatMessage(
     id: id ?? this.id,
@@ -700,6 +840,12 @@ class ChatMessage extends DataClass implements Insertable<ChatMessage> {
     content: content ?? this.content,
     origin: origin ?? this.origin,
     status: status ?? this.status,
+    attachmentsJson: attachmentsJson.present
+        ? attachmentsJson.value
+        : this.attachmentsJson,
+    providerProfileId: providerProfileId.present
+        ? providerProfileId.value
+        : this.providerProfileId,
     createdAt: createdAt ?? this.createdAt,
   );
   ChatMessage copyWithCompanion(ChatMessagesCompanion data) {
@@ -712,6 +858,12 @@ class ChatMessage extends DataClass implements Insertable<ChatMessage> {
       content: data.content.present ? data.content.value : this.content,
       origin: data.origin.present ? data.origin.value : this.origin,
       status: data.status.present ? data.status.value : this.status,
+      attachmentsJson: data.attachmentsJson.present
+          ? data.attachmentsJson.value
+          : this.attachmentsJson,
+      providerProfileId: data.providerProfileId.present
+          ? data.providerProfileId.value
+          : this.providerProfileId,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
     );
   }
@@ -725,14 +877,25 @@ class ChatMessage extends DataClass implements Insertable<ChatMessage> {
           ..write('content: $content, ')
           ..write('origin: $origin, ')
           ..write('status: $status, ')
+          ..write('attachmentsJson: $attachmentsJson, ')
+          ..write('providerProfileId: $providerProfileId, ')
           ..write('createdAt: $createdAt')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode =>
-      Object.hash(id, conversationId, role, content, origin, status, createdAt);
+  int get hashCode => Object.hash(
+    id,
+    conversationId,
+    role,
+    content,
+    origin,
+    status,
+    attachmentsJson,
+    providerProfileId,
+    createdAt,
+  );
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -743,6 +906,8 @@ class ChatMessage extends DataClass implements Insertable<ChatMessage> {
           other.content == this.content &&
           other.origin == this.origin &&
           other.status == this.status &&
+          other.attachmentsJson == this.attachmentsJson &&
+          other.providerProfileId == this.providerProfileId &&
           other.createdAt == this.createdAt);
 }
 
@@ -753,6 +918,8 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessage> {
   final Value<String> content;
   final Value<String> origin;
   final Value<String> status;
+  final Value<String?> attachmentsJson;
+  final Value<String?> providerProfileId;
   final Value<DateTime> createdAt;
   final Value<int> rowid;
   const ChatMessagesCompanion({
@@ -762,6 +929,8 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessage> {
     this.content = const Value.absent(),
     this.origin = const Value.absent(),
     this.status = const Value.absent(),
+    this.attachmentsJson = const Value.absent(),
+    this.providerProfileId = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.rowid = const Value.absent(),
   });
@@ -772,6 +941,8 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessage> {
     required String content,
     this.origin = const Value.absent(),
     this.status = const Value.absent(),
+    this.attachmentsJson = const Value.absent(),
+    this.providerProfileId = const Value.absent(),
     required DateTime createdAt,
     this.rowid = const Value.absent(),
   }) : id = Value(id),
@@ -786,6 +957,8 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessage> {
     Expression<String>? content,
     Expression<String>? origin,
     Expression<String>? status,
+    Expression<String>? attachmentsJson,
+    Expression<String>? providerProfileId,
     Expression<DateTime>? createdAt,
     Expression<int>? rowid,
   }) {
@@ -796,6 +969,8 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessage> {
       if (content != null) 'content': content,
       if (origin != null) 'origin': origin,
       if (status != null) 'status': status,
+      if (attachmentsJson != null) 'attachments_json': attachmentsJson,
+      if (providerProfileId != null) 'provider_profile_id': providerProfileId,
       if (createdAt != null) 'created_at': createdAt,
       if (rowid != null) 'rowid': rowid,
     });
@@ -808,6 +983,8 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessage> {
     Value<String>? content,
     Value<String>? origin,
     Value<String>? status,
+    Value<String?>? attachmentsJson,
+    Value<String?>? providerProfileId,
     Value<DateTime>? createdAt,
     Value<int>? rowid,
   }) {
@@ -818,6 +995,8 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessage> {
       content: content ?? this.content,
       origin: origin ?? this.origin,
       status: status ?? this.status,
+      attachmentsJson: attachmentsJson ?? this.attachmentsJson,
+      providerProfileId: providerProfileId ?? this.providerProfileId,
       createdAt: createdAt ?? this.createdAt,
       rowid: rowid ?? this.rowid,
     );
@@ -844,6 +1023,12 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessage> {
     if (status.present) {
       map['status'] = Variable<String>(status.value);
     }
+    if (attachmentsJson.present) {
+      map['attachments_json'] = Variable<String>(attachmentsJson.value);
+    }
+    if (providerProfileId.present) {
+      map['provider_profile_id'] = Variable<String>(providerProfileId.value);
+    }
     if (createdAt.present) {
       map['created_at'] = Variable<DateTime>(createdAt.value);
     }
@@ -862,6 +1047,8 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessage> {
           ..write('content: $content, ')
           ..write('origin: $origin, ')
           ..write('status: $status, ')
+          ..write('attachmentsJson: $attachmentsJson, ')
+          ..write('providerProfileId: $providerProfileId, ')
           ..write('createdAt: $createdAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
@@ -890,6 +1077,7 @@ typedef $$ConversationsTableCreateCompanionBuilder =
       required String title,
       Value<bool> isPinned,
       Value<int?> pinOrder,
+      Value<String?> providerProfileId,
       required DateTime createdAt,
       required DateTime updatedAt,
       Value<int> rowid,
@@ -900,6 +1088,7 @@ typedef $$ConversationsTableUpdateCompanionBuilder =
       Value<String> title,
       Value<bool> isPinned,
       Value<int?> pinOrder,
+      Value<String?> providerProfileId,
       Value<DateTime> createdAt,
       Value<DateTime> updatedAt,
       Value<int> rowid,
@@ -931,6 +1120,11 @@ class $$ConversationsTableFilterComposer
 
   ColumnFilters<int> get pinOrder => $composableBuilder(
     column: $table.pinOrder,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get providerProfileId => $composableBuilder(
+    column: $table.providerProfileId,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -974,6 +1168,11 @@ class $$ConversationsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get providerProfileId => $composableBuilder(
+    column: $table.providerProfileId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<DateTime> get createdAt => $composableBuilder(
     column: $table.createdAt,
     builder: (column) => ColumnOrderings(column),
@@ -1005,6 +1204,11 @@ class $$ConversationsTableAnnotationComposer
 
   GeneratedColumn<int> get pinOrder =>
       $composableBuilder(column: $table.pinOrder, builder: (column) => column);
+
+  GeneratedColumn<String> get providerProfileId => $composableBuilder(
+    column: $table.providerProfileId,
+    builder: (column) => column,
+  );
 
   GeneratedColumn<DateTime> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
@@ -1048,6 +1252,7 @@ class $$ConversationsTableTableManager
                 Value<String> title = const Value.absent(),
                 Value<bool> isPinned = const Value.absent(),
                 Value<int?> pinOrder = const Value.absent(),
+                Value<String?> providerProfileId = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
                 Value<DateTime> updatedAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
@@ -1056,6 +1261,7 @@ class $$ConversationsTableTableManager
                 title: title,
                 isPinned: isPinned,
                 pinOrder: pinOrder,
+                providerProfileId: providerProfileId,
                 createdAt: createdAt,
                 updatedAt: updatedAt,
                 rowid: rowid,
@@ -1066,6 +1272,7 @@ class $$ConversationsTableTableManager
                 required String title,
                 Value<bool> isPinned = const Value.absent(),
                 Value<int?> pinOrder = const Value.absent(),
+                Value<String?> providerProfileId = const Value.absent(),
                 required DateTime createdAt,
                 required DateTime updatedAt,
                 Value<int> rowid = const Value.absent(),
@@ -1074,6 +1281,7 @@ class $$ConversationsTableTableManager
                 title: title,
                 isPinned: isPinned,
                 pinOrder: pinOrder,
+                providerProfileId: providerProfileId,
                 createdAt: createdAt,
                 updatedAt: updatedAt,
                 rowid: rowid,
@@ -1111,6 +1319,8 @@ typedef $$ChatMessagesTableCreateCompanionBuilder =
       required String content,
       Value<String> origin,
       Value<String> status,
+      Value<String?> attachmentsJson,
+      Value<String?> providerProfileId,
       required DateTime createdAt,
       Value<int> rowid,
     });
@@ -1122,6 +1332,8 @@ typedef $$ChatMessagesTableUpdateCompanionBuilder =
       Value<String> content,
       Value<String> origin,
       Value<String> status,
+      Value<String?> attachmentsJson,
+      Value<String?> providerProfileId,
       Value<DateTime> createdAt,
       Value<int> rowid,
     });
@@ -1162,6 +1374,16 @@ class $$ChatMessagesTableFilterComposer
 
   ColumnFilters<String> get status => $composableBuilder(
     column: $table.status,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get attachmentsJson => $composableBuilder(
+    column: $table.attachmentsJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get providerProfileId => $composableBuilder(
+    column: $table.providerProfileId,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1210,6 +1432,16 @@ class $$ChatMessagesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get attachmentsJson => $composableBuilder(
+    column: $table.attachmentsJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get providerProfileId => $composableBuilder(
+    column: $table.providerProfileId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<DateTime> get createdAt => $composableBuilder(
     column: $table.createdAt,
     builder: (column) => ColumnOrderings(column),
@@ -1244,6 +1476,16 @@ class $$ChatMessagesTableAnnotationComposer
 
   GeneratedColumn<String> get status =>
       $composableBuilder(column: $table.status, builder: (column) => column);
+
+  GeneratedColumn<String> get attachmentsJson => $composableBuilder(
+    column: $table.attachmentsJson,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get providerProfileId => $composableBuilder(
+    column: $table.providerProfileId,
+    builder: (column) => column,
+  );
 
   GeneratedColumn<DateTime> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
@@ -1286,6 +1528,8 @@ class $$ChatMessagesTableTableManager
                 Value<String> content = const Value.absent(),
                 Value<String> origin = const Value.absent(),
                 Value<String> status = const Value.absent(),
+                Value<String?> attachmentsJson = const Value.absent(),
+                Value<String?> providerProfileId = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ChatMessagesCompanion(
@@ -1295,6 +1539,8 @@ class $$ChatMessagesTableTableManager
                 content: content,
                 origin: origin,
                 status: status,
+                attachmentsJson: attachmentsJson,
+                providerProfileId: providerProfileId,
                 createdAt: createdAt,
                 rowid: rowid,
               ),
@@ -1306,6 +1552,8 @@ class $$ChatMessagesTableTableManager
                 required String content,
                 Value<String> origin = const Value.absent(),
                 Value<String> status = const Value.absent(),
+                Value<String?> attachmentsJson = const Value.absent(),
+                Value<String?> providerProfileId = const Value.absent(),
                 required DateTime createdAt,
                 Value<int> rowid = const Value.absent(),
               }) => ChatMessagesCompanion.insert(
@@ -1315,6 +1563,8 @@ class $$ChatMessagesTableTableManager
                 content: content,
                 origin: origin,
                 status: status,
+                attachmentsJson: attachmentsJson,
+                providerProfileId: providerProfileId,
                 createdAt: createdAt,
                 rowid: rowid,
               ),

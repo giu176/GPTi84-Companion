@@ -12,6 +12,7 @@ class Conversations extends Table {
   TextColumn get title => text().withLength(min: 1, max: 120)();
   BoolColumn get isPinned => boolean().withDefault(const Constant(false))();
   IntColumn get pinOrder => integer().nullable()();
+  TextColumn get providerProfileId => text().nullable()();
   DateTimeColumn get createdAt => dateTime()();
   DateTimeColumn get updatedAt => dateTime()();
 
@@ -26,6 +27,8 @@ class ChatMessages extends Table {
   TextColumn get content => text()();
   TextColumn get origin => text().withDefault(const Constant('phone'))();
   TextColumn get status => text().withDefault(const Constant('complete'))();
+  TextColumn get attachmentsJson => text().nullable()();
+  TextColumn get providerProfileId => text().nullable()();
   DateTimeColumn get createdAt => dateTime()();
 
   @override
@@ -39,7 +42,24 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 3;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+    onCreate: (migrator) => migrator.createAll(),
+    onUpgrade: (migrator, from, to) async {
+      if (from < 2) {
+        await migrator.addColumn(chatMessages, chatMessages.attachmentsJson);
+      }
+      if (from < 3) {
+        await migrator.addColumn(
+          conversations,
+          conversations.providerProfileId,
+        );
+        await migrator.addColumn(chatMessages, chatMessages.providerProfileId);
+      }
+    },
+  );
 
   Stream<List<Conversation>> watchConversations() {
     return (select(conversations)..orderBy([
@@ -56,12 +76,24 @@ class AppDatabase extends _$AppDatabase {
         .watch();
   }
 
-  Future<void> createConversation({required String id, required String title}) {
+  Future<List<ChatMessage>> getMessages(String conversationId) {
+    return (select(chatMessages)
+          ..where((row) => row.conversationId.equals(conversationId))
+          ..orderBy([(row) => OrderingTerm.asc(row.createdAt)]))
+        .get();
+  }
+
+  Future<void> createConversation({
+    required String id,
+    required String title,
+    String? providerProfileId,
+  }) {
     final now = DateTime.now();
     return into(conversations).insert(
       ConversationsCompanion.insert(
         id: id,
         title: title,
+        providerProfileId: Value(providerProfileId),
         createdAt: now,
         updatedAt: now,
       ),
@@ -75,6 +107,8 @@ class AppDatabase extends _$AppDatabase {
     required String content,
     String origin = 'phone',
     String status = 'complete',
+    String? attachmentsJson,
+    String? providerProfileId,
   }) async {
     await transaction(() async {
       await into(chatMessages).insert(
@@ -85,6 +119,8 @@ class AppDatabase extends _$AppDatabase {
           content: content,
           origin: Value(origin),
           status: Value(status),
+          attachmentsJson: Value(attachmentsJson),
+          providerProfileId: Value(providerProfileId),
           createdAt: DateTime.now(),
         ),
       );
@@ -98,6 +134,28 @@ class AppDatabase extends _$AppDatabase {
     return (update(chatMessages)..where((row) => row.id.equals(id))).write(
       ChatMessagesCompanion(status: Value(status)),
     );
+  }
+
+  Future<void> setConversationProvider(String id, String? profileId) {
+    return (update(conversations)..where((row) => row.id.equals(id))).write(
+      ConversationsCompanion(
+        providerProfileId: Value(profileId),
+        updatedAt: Value(DateTime.now()),
+      ),
+    );
+  }
+
+  Future<void> reassignProvider(String removedId, String? replacementId) async {
+    await transaction(() async {
+      await (update(
+        conversations,
+      )..where((row) => row.providerProfileId.equals(removedId))).write(
+        ConversationsCompanion(
+          providerProfileId: Value(replacementId),
+          updatedAt: Value(DateTime.now()),
+        ),
+      );
+    });
   }
 
   Future<void> setPinned(String id, bool pinned) async {

@@ -14,8 +14,10 @@ TI-84 Plus <--2.5 mm DBUS--> Pico 2WH <--WSS/Wi-Fi--> relay <--HTTPS--> AI provi
 - GPTi84-Plus DBUS, TI transfer, token, pager, and WSS implementation retained at the repository root.
 - Existing Arduino/HC-06/Android prototype imported with history under `legacy/arduino-relay/`.
 - Flutter Android/iOS application scaffolded under `apps/companion/`.
-- Initial app slice includes persistent local chats, secure relay settings, a relay API boundary, pinned-chat limits, Markdown replies, and calculator/settings surfaces.
-- Pico 2WH hardware parity, production relay, BLE provisioning, images, and remote pin synchronization remain planned work.
+- The companion supports multiple named, securely stored profiles for OpenAI, Anthropic, Gemini, OpenAI-compatible APIs, Ollama, and experimental ChatGPT Subscription access.
+- A global favorite supplies the default for new chats, while each conversation can select and retain its own service.
+- Phone chats support persistent images and files, Markdown replies, delivery states, and calculator pinning.
+- Pico 2WH hardware parity, the production relay, BLE provisioning, and remote pin synchronization remain planned work.
 
 The upstream firmware was validated on the original Pico W. Do not assume RP2350 parity until the staged Pico 2WH gate in [the architecture document](docs/architecture.md) passes.
 
@@ -40,6 +42,10 @@ C:\Users\giuli\flutter-sdk\bin\flutter.bat test
 ```
 
 Android APK builds additionally require an Android SDK. iOS builds require macOS and Xcode.
+
+## Provider authentication
+
+Provider API keys are stored with Android Keystore or iOS Keychain through Flutter secure storage. The app also offers an experimental ChatGPT Subscription connector modeled independently after Odysseus: it uses OpenAI's Codex device authorization and private Codex Responses backend. This is not a documented third-party ChatGPT API and may stop working without notice. GPTi84 Companion never collects ChatGPT passwords, cookies, or browser sessions.
 
 ## Upstream
 

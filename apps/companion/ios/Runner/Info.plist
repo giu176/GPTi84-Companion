@@ -32,6 +32,11 @@
 	<string>The camera can attach a photo to an AI conversation.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>The photo library can attach an image to an AI conversation.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
