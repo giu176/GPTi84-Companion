@@ -1,0 +1,80 @@
+___________________________________________
+___________________________________________
+__________________AXE_API__________________
+___________________________________________
+
+To use Axe externally, the following jump points are provided in Axe.inc:
+
+##################
+#  api_MainMenu  #
+##################
+Inputs: none
+Outputs: none
+
+Opens up the main menu in Axe and returns after quitting.
+
+####################
+#  api_CompileOP1  #
+####################
+Inputs: OP1 = Name of program to compile
+          a = Compile Mode
+            bit 0-2:
+              0 = No shell
+              1 = Ion
+              2 = MirageOS
+              3 = DoorsCS
+              4 = Application
+            bit 3
+              0 = Regular compile
+              1 = Zoom compile
+Outputs: none
+
+Compiles the program and then returns
+
+###################
+#  api_TokenHook  #
+###################
+Inputs: none
+Outputs: none
+
+Enables the Axe token hook then returns.  Only replaces tokens
+when in the editor context of a program that has an Axe header.
+
+
+####### EXAMPLE USE OF API ######
+
+.nolist
+#include "ti83plus.inc"
+#include "Axe.inc"
+.list
+
+#define B_CALL(xxxx) rst 28h \ .dw xxxx
+
+.org $9D93
+.dw $6DBB
+
+Start:
+  in    a,(6)                 ;Get current page
+  push  af                    ;Save it for later
+  ld    hl,s_AxeApp           ;Get the name of Axe's app
+  .db   $E7                   ;Copy name to OP1 for search
+  B_CALL(_FindApp)            ;Find the application
+  jr    c,Quit                ;Quit if not found
+  push  af                    ;Save page for use later
+  ld    hl,s_AxeSShip         ;Get name of program to compile
+  .db   $E7                   ;Copy name to OP1 for compile
+  pop   af                    ;Restore Axe app page
+  out   (6),a                 ;Make that the current page
+  ld    a,api_NoShell         ;Compile for no shell
+  call  api_CompileOP1        ;COMPILE!!!
+Quit:
+  pop   af                    ;Restore original page number
+  out   (6),a                 ;Make that the current page
+  ret                         ;Quit program
+
+s_AxeApp:
+  .db   $14,"Axe     "
+s_AxeSShip:
+  .db   $05,"AXESSHIP"
+
+.end

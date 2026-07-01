@@ -7,15 +7,15 @@ Flutter application for Android and iOS.
 - Material 3 chat, calculator, and settings navigation;
 - Drift/SQLite local conversations and messages;
 - an eight-chat local pin limit matching calculator capacity;
-- secure relay URL/token storage;
-- relay health and idempotent text-message API client;
+- a BLE GATT central for Pico-originated calculator chat;
+- calculator-safe 16x8 text pagination for Pico replies;
 - Markdown assistant rendering and message delivery states;
 - Android/iOS Bluetooth and photo permission declarations;
 - direct OpenAI, Anthropic, Gemini, OpenAI-compatible, and Ollama adapters;
 - an encrypted multi-profile provider vault with named duplicates, a global favorite, health testing, and per-chat selection;
 - camera, gallery, and document attachments copied to app-private storage.
 
-Settings keeps provider management on its own AI services page, relay configuration under Advanced, and explanatory file/security/billing/privacy material under About.
+Settings keeps provider management on its own AI services page, phone relay diagnostics under Advanced, and explanatory file/security/billing/privacy material under About.
 
 ## Authentication boundary
 
@@ -23,9 +23,9 @@ Use provider-issued API credentials for the stable path. An opt-in experimental 
 
 ## Next
 
-- production relay API and sync repository;
-- BLE Pico 2WH provisioning;
-- pinned-chat synchronization and standalone calculator event import.
+- physical Android/iPhone BLE parity and reconnect testing;
+- device-bound pairing-secret onboarding;
+- pinned-chat browsing and standalone calculator event import.
 
 ## Checks
 

@@ -21,6 +21,20 @@ ring = Pin(RING, Pin.IN, Pin.PULL_UP)
 
 
 SEND_BYTE_GAP_MS = 0
+EDGE_LOGGER = None
+
+
+def set_edge_logger(logger):
+    global EDGE_LOGGER
+    EDGE_LOGGER = logger
+
+
+def _log_edge(message):
+    if EDGE_LOGGER is not None:
+        try:
+            EDGE_LOGGER(message)
+        except Exception:
+            pass
 
 
 def release(p):
@@ -48,20 +62,27 @@ def recv_bit(timeout_ms=2000):
         t = tip.value()
         r = ring.value()
         if t == 0 or r == 0:
+            _log_edge("edge tip=%d ring=%d" % (t, r))
             break
         if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
             return None
     if t == 0:
         bit = 0
         pull_low(ring)
+        deadline = time.ticks_add(time.ticks_ms(), timeout_ms)
         while tip.value() == 0:
-            pass
+            if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
+                release(ring)
+                return None
         release(ring)
     else:
         bit = 1
         pull_low(tip)
+        deadline = time.ticks_add(time.ticks_ms(), timeout_ms)
         while ring.value() == 0:
-            pass
+            if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
+                release(tip)
+                return None
         release(tip)
     return bit
 

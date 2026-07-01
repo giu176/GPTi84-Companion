@@ -83,6 +83,65 @@ class AppDatabase extends _$AppDatabase {
         .get();
   }
 
+  Future<ChatMessage?> getMessage(String id) {
+    return (select(
+      chatMessages,
+    )..where((row) => row.id.equals(id))).getSingleOrNull();
+  }
+
+  Future<List<PinnedConversationProjection>> getPinnedProjections() async {
+    final pinned =
+        await (select(conversations)
+              ..where((row) => row.isPinned.equals(true))
+              ..orderBy([
+                (row) => OrderingTerm.asc(row.pinOrder),
+                (row) => OrderingTerm.asc(row.updatedAt),
+              ]))
+            .get();
+    final result = <PinnedConversationProjection>[];
+    for (final conversation in pinned) {
+      final messages =
+          await (select(chatMessages)
+                ..where((row) => row.conversationId.equals(conversation.id))
+                ..orderBy([(row) => OrderingTerm.desc(row.createdAt)])
+                ..limit(12))
+              .get();
+      final text = messages.reversed
+          .map((message) => '${message.role}: ${message.content}')
+          .join('\n');
+      result.add(
+        PinnedConversationProjection(
+          conversationId: conversation.id,
+          title: conversation.title,
+          text: text,
+          pinOrder: conversation.pinOrder ?? 0,
+          revision: conversation.updatedAt.millisecondsSinceEpoch,
+        ),
+      );
+    }
+    return result;
+  }
+
+  Future<PinnedConversationProjection?> getPinnedProjectionBySlot(
+    int slot,
+  ) async {
+    if (slot < 1) return null;
+    final projections = await getPinnedProjections();
+    if (slot > projections.length) return null;
+    return projections[slot - 1];
+  }
+
+  Future<Conversation?> getConversation(String id) {
+    return (select(
+      conversations,
+    )..where((row) => row.id.equals(id))).getSingleOrNull();
+  }
+
+  Future<int> getConversationRevision(String id) async {
+    final conversation = await getConversation(id);
+    return conversation?.updatedAt.millisecondsSinceEpoch ?? 0;
+  }
+
   Future<void> createConversation({
     required String id,
     required String title,
@@ -97,6 +156,22 @@ class AppDatabase extends _$AppDatabase {
         createdAt: now,
         updatedAt: now,
       ),
+    );
+  }
+
+  Future<void> ensureConversation({
+    required String id,
+    required String title,
+    String? providerProfileId,
+  }) async {
+    final existing = await (select(
+      conversations,
+    )..where((row) => row.id.equals(id))).getSingleOrNull();
+    if (existing != null) return;
+    await createConversation(
+      id: id,
+      title: title,
+      providerProfileId: providerProfileId,
     );
   }
 
@@ -131,9 +206,17 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<void> setMessageStatus(String id, String status) {
-    return (update(chatMessages)..where((row) => row.id.equals(id))).write(
-      ChatMessagesCompanion(status: Value(status)),
-    );
+    return transaction(() async {
+      final message = await getMessage(id);
+      await (update(chatMessages)..where((row) => row.id.equals(id))).write(
+        ChatMessagesCompanion(status: Value(status)),
+      );
+      if (message != null) {
+        await (update(conversations)
+              ..where((row) => row.id.equals(message.conversationId)))
+            .write(ConversationsCompanion(updatedAt: Value(DateTime.now())));
+      }
+    });
   }
 
   Future<void> setConversationProvider(String id, String? profileId) {
@@ -190,15 +273,6 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<void> setPinned(String id, bool pinned) async {
-    if (pinned) {
-      final count =
-          await (selectOnly(conversations)
-                ..addColumns([conversations.id.count()])
-                ..where(conversations.isPinned.equals(true)))
-              .map((row) => row.read(conversations.id.count()) ?? 0)
-              .getSingle();
-      if (count >= 8) throw StateError('Only eight chats can be pinned');
-    }
     await (update(conversations)..where((row) => row.id.equals(id))).write(
       ConversationsCompanion(
         isPinned: Value(pinned),
@@ -216,6 +290,22 @@ class AppDatabase extends _$AppDatabase {
       await (delete(conversations)..where((row) => row.id.equals(id))).go();
     });
   }
+}
+
+class PinnedConversationProjection {
+  const PinnedConversationProjection({
+    required this.conversationId,
+    required this.title,
+    required this.text,
+    required this.pinOrder,
+    required this.revision,
+  });
+
+  final String conversationId;
+  final String title;
+  final String text;
+  final int pinOrder;
+  final int revision;
 }
 
 LazyDatabase _openConnection() {

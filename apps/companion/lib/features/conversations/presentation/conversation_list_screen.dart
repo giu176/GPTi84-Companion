@@ -108,7 +108,7 @@ class ConversationListScreen extends ConsumerWidget {
   }
 
   Future<void> _createConversation(BuildContext context, WidgetRef ref) async {
-    final id = const Uuid().v4();
+    final id = 'C${const Uuid().v4().replaceAll('-', '').toUpperCase()}';
     const title = 'New chat';
     final vault = await ref.read(aiProviderStoreProvider).readVault();
     final profileId = vault.favoriteProfileId;

@@ -680,7 +680,7 @@ class _EmptyChat extends StatelessWidget {
       child: Padding(
         padding: EdgeInsets.all(32),
         child: Text(
-          'This conversation is ready. Configure your relay, then send the first message.',
+          'This conversation is ready. Choose an AI service, then send the first message.',
           textAlign: TextAlign.center,
         ),
       ),

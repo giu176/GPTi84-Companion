@@ -4,3 +4,5 @@
 **/secrets.py
 .env
 /deploy
+*.log
+chats.v1.json

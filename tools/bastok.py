@@ -1,4 +1,4 @@
-"""Minimal TI-BASIC line tokenizer + .8Xp wrapper.
+"""Minimal TI-BASIC/Axe line tokenizer + .8Xp wrapper.
 
 Scoped intentionally: only handles the keywords and constructs used by
 the chat deck program. Adding a new keyword means adding an entry to
@@ -38,6 +38,24 @@ KEYWORDS = [
     # Used by the chat pager to extract row R of a fixed-grid page
     # via sub(StrP, 1+(R-1)*16, 16).
     ("sub(",     bytes([0xBB, 0x0C])),
+    # Axe Parser token replacements used by the native calculator UI.
+    # These bytes are the calculator tokens that Axe's hook interprets as
+    # native commands. They are verified against docs/axe/Developers/
+    # tokenhook.inc and the bundled example programs:
+    #   hFix=0x0E6 -> 0x73, hClrDraw=0x10A -> 0x85,
+    #   hText=0x126 -> 0x93, hLine=0x138 -> 0x9C,
+    #   hDispGraph=0x1BE -> 0xDF, hSend=0x1CE -> 0xE7,
+    #   hGet=0x1D0 -> 0xE8, hClrTable/port=0x1F6 -> 0xFB.
+    ("DispGraph", bytes([0xDF])),
+    ("ClrDraw",  bytes([0x85])),
+    ("Text(",    bytes([0x93])),
+    ("Line(",    bytes([0x9C])),
+    ("Buff(",    bytes([0xB3])),
+    ("Send(",    bytes([0xE7])),
+    ("Get(",     bytes([0xE8])),
+    ("port",     bytes([0xFB])),
+    ("Fix",      bytes([0x73])),
+    ("Full",     bytes([0xBB, 0x67])),
     # Two-char comparison operators. Must come before '<' / '>' /
     # '=' single-char punctuation so longest-match wins.
     ("<=",       bytes([0x6D])),
@@ -94,6 +112,8 @@ KEYWORDS = [
 PUNCT = {
     "(":  0x10,
     ")":  0x11,
+    "{":  0x08,
+    "}":  0x09,
     '"':  0x2A,
     ",":  0x2B,
     ".":  0x3A,

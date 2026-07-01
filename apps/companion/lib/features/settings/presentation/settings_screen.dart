@@ -70,7 +70,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   child: ListTile(
                     leading: const Icon(Icons.tune_outlined),
                     title: const Text('Advanced'),
-                    subtitle: const Text('Personal relay and synchronization'),
+                    subtitle: const Text('Phone relay and Pico diagnostics'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => _open(const AdvancedSettingsScreen()),
                   ),

@@ -1,0 +1,37 @@
+. GPTI84 Axe native app notes
+.
+. Transfer-ready source:
+.   programs/axe_gpti84/AXGPTI84.basic
+. Transfer-ready file:
+.   programs/axe_gpti84/AXGPTI84.8xp
+.
+. Current GUI-only prototype:
+.   - native graph-buffer rendering with Fix 5, ClrDraw, Line(, Text(,
+.     and DispGraph
+.   - no Pico or link-port traffic in this cut
+.   - HOME, CHAT, and PROMPT screens
+.   - HOME renders a generated app-like list directly
+.   - CHAT draws from a 26x8 row buffer matching the visible graph text
+.     capacity in Wabbitemu
+.   - 20 generated mock chats named CHAT001, CHAT002, ...
+.   - NEW CHAT opens PROMPT first; sending inserts a generated NEWxxx chat
+.     at the top of the catalog and opens it with the prompt visible
+.   - chat headers put title on the left and 0001/0101 in the final 9 chars,
+.     with no dash separator
+.   - CHAT003 is a 101-page Shakespeare-text scroll test
+.   - deterministic redraw then key-wait loop:
+.     down=getKey(1), up=getKey(4), left=getKey(2), right=getKey(3)
+.   - generated local placeholder rows only for emulator UX testing
+.   - sent prompt choices are rendered into the chat body
+.   - full dynamic wrapping is intentionally not compiled into Axe; Pico/phone
+.     will provide already-wrapped rows
+.   - left exits only from HOME
+.
+. Intended next cut:
+.   - replace the local row-generation routines with Pico-provided rows
+.   - restore raw framed LIST, OPEN:<slot>, NEW, UP, DOWN, and
+.     SEND:ACTIVE:<prompt> requests
+.   - draw rows supplied by the Pico mock as pages:N 16x8 payloads
+.
+. The GUI prototype keeps all labels uppercase because the transfer-ready
+. tokenizer and current display path only cover the stable TI-safe subset.

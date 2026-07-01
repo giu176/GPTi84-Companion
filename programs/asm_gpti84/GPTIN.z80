@@ -1,0 +1,227 @@
+; GPTIN.z80: native GPTi84 calculator UI shell.
+;
+; This is the native replacement track for the TI-BASIC GPTI84 program.
+; It deliberately starts as a screen/key shell so we can verify the UX loop
+; before moving the V2 link transaction into ASM.
+;
+; Build when the Z80 toolchain is available:
+;   spasm -I references/other_projects/spasm programs/asm_gpti84/GPTIN.z80 programs/asm_gpti84/GPTIN.8xp
+;
+; Keys:
+;   CLEAR exits.
+;   ENTER toggles a simulated phone wait/ok status for UI bring-up.
+;   UP/DOWN move the selected list row.
+
+.nolist
+#include "ti83plus.inc"
+.list
+
+.org    $9D93
+.db     t2ByteTok, tAsmCmp
+
+K_CLEAR         .equ    $09
+K_ENTER         .equ    $05
+K_DOWN          .equ    $04
+K_UP            .equ    $03
+
+STATE_LIST      .equ    0
+STATE_WAIT      .equ    1
+STATE_CHAT      .equ    2
+
+start:
+        xor     a
+        ld      (ui_state), a
+        ld      (selected_slot), a
+        call    draw_list
+
+main_loop:
+        bcall(_GetKey)
+        cp      K_CLEAR
+        jr      z, done
+        cp      K_ENTER
+        jr      z, on_enter
+        cp      K_DOWN
+        jr      z, on_down
+        cp      K_UP
+        jr      z, on_up
+        jr      main_loop
+
+on_enter:
+        ld      a, (ui_state)
+        cp      STATE_LIST
+        jr      z, enter_from_list
+        cp      STATE_WAIT
+        jr      z, enter_from_wait
+        call    draw_prompt_stub
+        jr      main_loop
+
+enter_from_list:
+        ld      a, STATE_WAIT
+        ld      (ui_state), a
+        call    draw_wait
+        jr      main_loop
+
+enter_from_wait:
+        ld      a, STATE_CHAT
+        ld      (ui_state), a
+        call    draw_chat_stub
+        jr      main_loop
+
+on_down:
+        ld      a, (ui_state)
+        cp      STATE_LIST
+        jr      nz, main_loop
+        ld      a, (selected_slot)
+        cp      1
+        jr      nc, main_loop
+        inc     a
+        ld      (selected_slot), a
+        call    draw_list
+        jr      main_loop
+
+on_up:
+        ld      a, (ui_state)
+        cp      STATE_LIST
+        jr      nz, main_loop
+        ld      a, (selected_slot)
+        or      a
+        jr      z, main_loop
+        dec     a
+        ld      (selected_slot), a
+        call    draw_list
+        jr      main_loop
+
+done:
+        bcall(_ClrLCDFull)
+        ret
+
+draw_list:
+        bcall(_ClrLCDFull)
+        ld      hl, $0000
+        ld      (curRow), hl
+        ld      hl, title
+        bcall(_PutS)
+
+        ld      hl, $0001
+        ld      (curRow), hl
+        ld      a, (selected_slot)
+        or      a
+        jr      nz, _dl_row0_plain
+        ld      a, '>'
+        bcall(_PutC)
+        jr      _dl_row0_text
+_dl_row0_plain:
+        ld      a, ' '
+        bcall(_PutC)
+_dl_row0_text:
+        ld      hl, item_new
+        bcall(_PutS)
+
+        ld      hl, $0002
+        ld      (curRow), hl
+        ld      a, (selected_slot)
+        cp      1
+        jr      nz, _dl_row1_plain
+        ld      a, '>'
+        bcall(_PutC)
+        jr      _dl_row1_text
+_dl_row1_plain:
+        ld      a, ' '
+        bcall(_PutC)
+_dl_row1_text:
+        ld      hl, item_chat
+        bcall(_PutS)
+
+        ld      hl, $0005
+        ld      (curRow), hl
+        ld      hl, hint_list
+        bcall(_PutS)
+
+        ld      hl, status_idle
+        call    draw_status
+        ret
+
+draw_wait:
+        bcall(_ClrLCDFull)
+        ld      hl, $0000
+        ld      (curRow), hl
+        ld      hl, title
+        bcall(_PutS)
+        ld      hl, $0002
+        ld      (curRow), hl
+        ld      hl, wait_msg
+        bcall(_PutS)
+        ld      hl, $0004
+        ld      (curRow), hl
+        ld      hl, wait_hint
+        bcall(_PutS)
+        ld      hl, status_wait
+        call    draw_status
+        ret
+
+draw_chat_stub:
+        bcall(_ClrLCDFull)
+        ld      hl, $0000
+        ld      (curRow), hl
+        ld      hl, chat_title
+        bcall(_PutS)
+        ld      hl, $0002
+        ld      (curRow), hl
+        ld      hl, chat_line1
+        bcall(_PutS)
+        ld      hl, $0003
+        ld      (curRow), hl
+        ld      hl, chat_line2
+        bcall(_PutS)
+        ld      hl, $0005
+        ld      (curRow), hl
+        ld      hl, hint_chat
+        bcall(_PutS)
+        ld      hl, status_ok
+        call    draw_status
+        ret
+
+draw_prompt_stub:
+        bcall(_ClrLCDFull)
+        ld      hl, $0000
+        ld      (curRow), hl
+        ld      hl, prompt_title
+        bcall(_PutS)
+        ld      hl, $0002
+        ld      (curRow), hl
+        ld      hl, prompt_stub
+        bcall(_PutS)
+        ld      hl, status_ok
+        call    draw_status
+        ret
+
+draw_status:
+        push    hl
+        ld      hl, $0007
+        ld      (curRow), hl
+        pop     hl
+        bcall(_PutS)
+        ret
+
+title:       .db "GPTI84 NATIVE", 0
+item_new:    .db "0 NEW CHAT", 0
+item_chat:   .db "1 PINNED CHAT", 0
+hint_list:   .db "ENTER OPEN", 0
+wait_msg:    .db "WAIT PHONE", 0
+wait_hint:   .db "ENTER SIM OK", 0
+chat_title:  .db "CHAT VIEW", 0
+chat_line1:  .db "NATIVE UI OWNS", 0
+chat_line2:  .db "SCREEN+KEYS", 0
+hint_chat:   .db "ENTER PROMPT", 0
+prompt_title:.db "PROMPT", 0
+prompt_stub: .db "EDITOR NEXT", 0
+
+status_idle: .db "PICO:OK PH:--", 0
+status_wait: .db "PICO:OK PH:...", 0
+status_ok:   .db "PICO:OK PH:OK", 0
+
+ui_state:       .db 0
+selected_slot:  .db 0
+
+.end
+

@@ -1,26 +1,15 @@
-; CHAT.z80: ship Str1 (text/prompt) and Str2 (math/equation) to the
-; Pico/desktop and exit. Reply lands in Str0.
+; CHAT.z80: ship Str1 (V2 command/prompt) to the Pico/phone and exit.
+; Reply lands in Str3..Str0 plus real N.
 ;
-; Architecture (Str1=text, Str2=math, Str0=reply):
-;   A TI-BASIC "deck" program owns the GUI -- it sets up Str1 and Str2,
-;   calls Asm(prgmCHAT), and reads Str0. The asm stays dumb: send Str1,
-;   send Str2, exit.
+; A TI-BASIC deck owns the GUI. It writes one command frame to Str1,
+; calls Asm(prgmCHAT), then renders the pages the Pico pushes back.
+; The asm stays dumb: send Str1, exit.
 ;
-;   The Pico decodes Str1 in 'text' mode (no implicit-mult between
-;   letters: 'HELLO' stays a word) and Str2 in 'math' mode (full
-;   implicit-mult: '2X' -> '2*X'). Pico ships one combined frame to the
-;   desktop, which produces a single reply and PC-master pushes it back
-;   as Str0. Calc must be at the home screen for the OS's idle
-;   silent-link receive to accept the push; we exit cleanly so that
-;   condition is satisfied.
-;
-;   Either Str1 or Str2 may be missing (deck didn't populate that slot);
-;   we send whichever exists. If neither exists we exit immediately
-;   without bothering the wire.
-;
-; Why no on-calc UI: the calc already has a string editor and the deck
-;   provides slot management. Building either in asm was 200 lines of
-;   mistakes.
+; Command examples:
+;   LIST
+;   OPEN C1234...
+;   SEND C1234... M1
+;   hello from the calculator
 ;
 ; Build:  just asm  programs/asm_chat/CHAT.z80
 ; Push:   just push-asm programs/asm_chat/CHAT.z80
@@ -34,32 +23,17 @@
 
 
 start:
-        ; --- Send Str1 if it exists -----------------------------------
         ld      hl, op1_str1
         rst     rMOV9TOOP1
         bcall(_ChkFindSym)
-        jr      c, try_str2             ; Str1 missing; skip to Str2
+        ret     c                       ; Str1 missing; done
 
         ld      hl, op1_str1
-        rst     rMOV9TOOP1
-        bcall(_SendVarCmd)
-
-try_str2:
-        ; --- Send Str2 if it exists -----------------------------------
-        ld      hl, op1_str2
-        rst     rMOV9TOOP1
-        bcall(_ChkFindSym)
-        ret     c                       ; Str2 missing; done
-
-        ld      hl, op1_str2
         rst     rMOV9TOOP1
         bcall(_SendVarCmd)
         ret
 
 op1_str1:
         .db     StrngObj, tVarStrng, tStr1, 0, 0, 0, 0, 0, 0
-
-op1_str2:
-        .db     StrngObj, tVarStrng, tStr2, 0, 0, 0, 0, 0, 0
 
 .end

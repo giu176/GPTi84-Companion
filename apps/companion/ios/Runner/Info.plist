@@ -27,7 +27,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Bluetooth provisions and checks the status of your Pico 2WH.</string>
+	<string>Bluetooth connects your Pico 2 W to calculator chat on this phone.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>The camera can attach a photo to an AI conversation.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

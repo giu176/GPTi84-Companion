@@ -1,0 +1,342 @@
+.GPTI84
+Fix 5
+Buff(32)->B
+0->V
+0->S
+0->H
+0->C
+0->O
+0->M
+0->T
+0->U
+20->N
+1->P
+Lbl D
+ClrDraw
+Line(0,7,95,7)
+If V=0
+Text(0,0,"CHATS")
+H->I
+sub(HR)
+Text(6,8,B)
+H+1->I
+sub(HR)
+Text(6,16,B)
+H+2->I
+sub(HR)
+Text(6,24,B)
+H+3->I
+sub(HR)
+Text(6,32,B)
+H+4->I
+sub(HR)
+Text(6,40,B)
+H+5->I
+sub(HR)
+Text(6,48,B)
+H+6->I
+sub(HR)
+Text(6,56,B)
+If S=0
+Text(0,8,">")
+End
+If S=1
+Text(0,16,">")
+End
+If S=2
+Text(0,24,">")
+End
+If S=3
+Text(0,32,">")
+End
+If S=4
+Text(0,40,">")
+End
+If S=5
+Text(0,48,">")
+End
+If S=6
+Text(0,56,">")
+End
+End
+If V=1
+C->I
+sub(TP)
+If C-U=3
+Text(0,0,"SHAKESPEARE")
+End
+If C-U!=3
+B->Y
+sub(L)
+Text(0,0,B)
+End
+sub(PG)
+Text(58,0,B)
+If T=1
+Text(0,8,"YOU")
+If M=0
+Text(0,16,"EXPLAIN THIS")
+End
+If M=1
+Text(0,16,"CHECK ANSWER")
+End
+If M=2
+Text(0,16,"MAKE QUIZ")
+End
+If M=3
+Text(0,16,"SOLVE STEPS")
+End
+End
+If T=0
+If C-U=3
+Text(0,8,"TO BE OR NOT TO BE THAT IS")
+Text(0,16,"THE QUESTION WHETHER TIS")
+Text(0,24,"NOBLER IN THE MIND TO")
+Text(0,32,"SUFFER THE SLINGS AND")
+Text(0,40,"ARROWS OF OUTRAGE")
+Text(0,48,"OR TO TAKE ARMS AGAINST")
+Text(0,56,"A SEA OF TROUBLES")
+End
+If C-U!=3
+Text(0,8,"YOU OPENED THIS CHAT")
+Text(0,16,"AI MOCK RESPONSE")
+End
+End
+End
+If V=2
+Text(0,0,"PROMPT")
+Text(6,20,"EXPLAIN THIS")
+Text(6,28,"CHECK ANSWER")
+Text(6,36,"MAKE QUIZ")
+Text(6,44,"SOLVE STEPS")
+If M=0
+Text(0,20,">")
+End
+If M=1
+Text(0,28,">")
+End
+If M=2
+Text(0,36,">")
+End
+If M=3
+Text(0,44,">")
+End
+End
+DispGraph
+Repeat getKey
+End
+If getKey(1)
+If V=0
+If H+S<N
+If S=6
+H+1->H
+End
+If S<6
+S+1->S
+End
+End
+End
+If V=1
+C->I
+sub(TP)
+P-1->X
+If O<X
+O+1->O
+End
+End
+If V=2
+If M<3
+M+1->M
+End
+End
+Repeat getKey(0)
+End
+Goto D
+End
+If getKey(4)
+If V=0
+If H+S>0
+If S=0
+H-1->H
+End
+If S>0
+S-1->S
+End
+End
+End
+If V=1
+If O>0
+O-1->O
+End
+End
+If V=2
+If M>0
+M-1->M
+End
+End
+Repeat getKey(0)
+End
+Goto D
+End
+If getKey(3)
+V->A
+If A=0
+H+S->I
+If I=0
+0->M
+2->T
+2->V
+End
+If I>0
+I->C
+0->O
+0->T
+1->V
+End
+End
+If A=1
+0->M
+2->V
+End
+If A=2
+If T=2
+U+1->U
+N+1->N
+1->C
+End
+1->T
+0->O
+1->V
+End
+Repeat getKey(0)
+End
+Goto D
+End
+If getKey(2)
+V->A
+If A=0
+Goto Q
+End
+If A=1
+0->V
+End
+If A=2
+If T=2
+0->V
+End
+If T!=2
+1->V
+End
+End
+Repeat getKey(0)
+End
+Goto D
+End
+Goto D
+Lbl ZR
+0->K
+Repeat K=26
+32->{B+K}
+K+1->K
+End
+0->{B+26}
+Return
+Lbl HR
+sub(ZR)
+If I=0
+78->{B}
+69->{B+1}
+87->{B+2}
+32->{B+3}
+67->{B+4}
+72->{B+5}
+65->{B+6}
+84->{B+7}
+Return
+End
+If I<=N
+B->Y
+sub(L)
+End
+Return
+Lbl L
+If I<=U
+78->{Y}
+69->{Y+1}
+87->{Y+2}
+U-I+1->X
+Y+3->Y
+sub(G)
+Y-3->Y
+Return
+End
+67->{Y}
+72->{Y+1}
+65->{Y+2}
+84->{Y+3}
+I-U->X
+Y+4->Y
+sub(G)
+Y-4->Y
+Return
+Lbl TP
+1->P
+If I<=U
+Return
+End
+I-U->X
+4->P
+If X=3
+101->P
+End
+Return
+Lbl PG
+sub(ZR)
+O+1->X
+B->Y
+sub(F)
+47->{B+4}
+P->X
+B+5->Y
+sub(F)
+Return
+Lbl G
+0->A
+While X>=100
+X-100->X
+A+1->A
+End
+A+48->{Y}
+0->A
+While X>=10
+X-10->X
+A+1->A
+End
+A+48->{Y+1}
+X+48->{Y+2}
+Return
+Lbl F
+0->A
+While X>=1000
+X-1000->X
+A+1->A
+End
+A+48->{Y}
+0->A
+While X>=100
+X-100->X
+A+1->A
+End
+A+48->{Y+1}
+0->A
+While X>=10
+X-10->X
+A+1->A
+End
+A+48->{Y+2}
+X+48->{Y+3}
+Return
+Lbl Q
+Fix 4
+ClrHome
+Return

@@ -2,157 +2,106 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers.dart';
-import '../data/relay_settings_store.dart';
 
-class AdvancedSettingsScreen extends ConsumerStatefulWidget {
+class AdvancedSettingsScreen extends ConsumerWidget {
   const AdvancedSettingsScreen({super.key});
 
   @override
-  ConsumerState<AdvancedSettingsScreen> createState() =>
-      _AdvancedSettingsScreenState();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final relay = ref.read(phoneRelayServerProvider);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Advanced')),
+      body: AnimatedBuilder(
+        animation: relay,
+        builder: (context, _) {
+          final snapshot = relay.snapshot;
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
+            children: [
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Developer TCP relay',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Temporary Android/LAN diagnostics only. Production calculator relay uses BLE from the Calculator screen.',
+                      ),
+                      const SizedBox(height: 18),
+                      _StatusRow(
+                        label: 'State',
+                        value: snapshot.running ? 'Listening' : 'Stopped',
+                      ),
+                      _StatusRow(label: 'Endpoint', value: snapshot.endpoint),
+                      _StatusRow(
+                        label: 'Requests',
+                        value: snapshot.requestCount.toString(),
+                      ),
+                      _StatusRow(
+                        label: 'Last event',
+                        value: snapshot.lastEvent,
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: snapshot.running
+                                  ? null
+                                  : () => relay.start(),
+                              icon: const Icon(Icons.play_arrow),
+                              label: const Text('Start'),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: snapshot.running
+                                  ? () => relay.stop()
+                                  : null,
+                              icon: const Icon(Icons.stop),
+                              label: const Text('Stop'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
 }
 
-class _AdvancedSettingsScreenState
-    extends ConsumerState<AdvancedSettingsScreen> {
-  final _url = TextEditingController();
-  final _token = TextEditingController();
-  var _loading = true;
-  var _obscureToken = true;
-  String? _health;
+class _StatusRow extends StatelessWidget {
+  const _StatusRow({required this.label, required this.value});
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final settings = await ref.read(relaySettingsStoreProvider).read();
-    if (!mounted) return;
-    _url.text = settings.baseUrl;
-    _token.text = settings.adminToken;
-    setState(() => _loading = false);
-  }
-
-  @override
-  void dispose() {
-    _url.dispose();
-    _token.dispose();
-    super.dispose();
-  }
+  final String label;
+  final String value;
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Advanced')),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
-              children: [
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(18),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Personal relay',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          'Used for standalone calculator chat and future synchronization.',
-                        ),
-                        const SizedBox(height: 18),
-                        TextField(
-                          controller: _url,
-                          keyboardType: TextInputType.url,
-                          autocorrect: false,
-                          decoration: const InputDecoration(
-                            labelText: 'Relay URL',
-                            hintText: 'https://relay.example.com',
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: _token,
-                          obscureText: _obscureToken,
-                          autocorrect: false,
-                          decoration: InputDecoration(
-                            labelText: 'Administrator token',
-                            suffixIcon: IconButton(
-                              onPressed: () => setState(
-                                () => _obscureToken = !_obscureToken,
-                              ),
-                              icon: Icon(
-                                _obscureToken
-                                    ? Icons.visibility_outlined
-                                    : Icons.visibility_off_outlined,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: FilledButton.icon(
-                                onPressed: _save,
-                                icon: const Icon(Icons.lock_outline),
-                                label: const Text('Save securely'),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            IconButton.filledTonal(
-                              tooltip: 'Test relay',
-                              onPressed: _test,
-                              icon: const Icon(Icons.monitor_heart_outlined),
-                            ),
-                          ],
-                        ),
-                        if (_health != null) ...[
-                          const SizedBox(height: 12),
-                          Text(_health!),
-                        ],
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 92,
+            child: Text(label, style: Theme.of(context).textTheme.labelLarge),
+          ),
+          Expanded(child: SelectableText(value)),
+        ],
+      ),
     );
-  }
-
-  Future<bool> _save() async {
-    final uri = Uri.tryParse(_url.text.trim());
-    if (uri == null ||
-        !uri.hasScheme ||
-        (!uri.isScheme('https') && !uri.isScheme('http'))) {
-      _show('Enter a valid HTTP or HTTPS relay URL');
-      return false;
-    }
-    await ref
-        .read(relaySettingsStoreProvider)
-        .write(RelaySettings(baseUrl: _url.text, adminToken: _token.text));
-    _show('Relay settings saved');
-    return true;
-  }
-
-  Future<void> _test() async {
-    if (!await _save()) return;
-    try {
-      final status = await ref.read(relayClientProvider).health();
-      if (mounted) setState(() => _health = 'Relay answered: $status');
-    } catch (error) {
-      if (mounted) setState(() => _health = 'Relay unavailable: $error');
-    }
-  }
-
-  void _show(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
